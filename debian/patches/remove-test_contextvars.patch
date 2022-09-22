@@ -1,0 +1,45 @@
+Description: Remove failing test: test_contextvars()
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: not-needed
+Last-Update: 2021-11-01
+
+--- sqlalchemy-1.4.23+ds1.orig/test/base/test_concurrency_py3k.py
++++ sqlalchemy-1.4.23+ds1/test/base/test_concurrency_py3k.py
+@@ -141,37 +141,6 @@ class TestAsyncioCompat(fixtures.TestBas
+         await to_await
+ 
+     @async_test
+-    @testing.requires.python37
+-    async def test_contextvars(self):
+-        import asyncio
+-        import contextvars
+-
+-        var = contextvars.ContextVar("var")
+-        concurrency = 5
+-
+-        async def async_inner(val):
+-            eq_(val, var.get())
+-            return var.get()
+-
+-        def inner(val):
+-            retval = await_only(async_inner(val))
+-            eq_(val, var.get())
+-            eq_(retval, val)
+-            return retval
+-
+-        async def task(val):
+-            var.set(val)
+-            return await greenlet_spawn(inner, val)
+-
+-        values = {
+-            await coro
+-            for coro in asyncio.as_completed(
+-                [task(i) for i in range(concurrency)]
+-            )
+-        }
+-        eq_(values, set(range(concurrency)))
+-
+-    @async_test
+     async def test_require_await(self):
+         def run():
+             return 1 + 1

@@ -1,0 +1,73 @@
+#!/usr/bin/make -f
+
+pd=python-sqlalchemy-doc
+
+PY3VERS=$(shell py3versions -vr)
+pkgdir=$(CURDIR)/debian/python3-sqlalchemy
+sqla_libdir=$(pkgdir)/usr/lib/python3/dist-packages/sqlalchemy
+sqla_ext_libdir=$(pkgdir)-ext/usr/lib/python3/dist-packages/sqlalchemy
+
+%:
+	dh $@ --buildsystem=pybuild --with python3,sphinxdoc
+
+override_dh_auto_clean:
+	rm -rf $(CURDIR)/lib/SQLAlchemy.egg-info $(CURDIR)/build/
+	find . -name '*\.py[co]' -delete
+
+override_dh_auto_install:
+	set -e ; set -x ; for i in $(PY3VERS) ; do \
+		python$$i ./setup.py install --root $(CURDIR)/debian/python3-sqlalchemy --install-layout=deb ; \
+	done
+
+	# Tests need an installed package.
+ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
+	set -e ; set -x ; for i in $(PY3VERS) ; do \
+		PYTHONPATH=$(CURDIR)/debian/python3-sqlalchemy/usr/lib/python3/dist-packages python$$i -m pytest ; \
+	done
+endif
+
+	# move extensions to -ext binary package
+	mkdir -p $(sqla_ext_libdir)
+	mv $(sqla_libdir)/*so $(sqla_ext_libdir)/
+
+override_dh_auto_build:
+	echo "Do nothing here..."
+
+override_dh_auto_test:
+	echo "Do nothing here..."
+
+override_dh_sphinxdoc:
+	cd doc/build && python3 -m sphinx -N -E -b html . ../../debian/$(pd)/usr/share/doc/$(pd)/html/
+	rm -rf debian/$(pd)/usr/share/doc/$(pd)/html/.doctrees
+	
+	cp -r doc/build/ debian/$(pd)/usr/share/doc/$(pd)/rst/
+	cd debian/$(pd)/usr/share/doc/$(pd)/rst/\
+		&& rm -f '*.py' '*.html' '*.png' \
+	       	&& rm -rf texinputs/
+	dh_link -p$(pd) /usr/share/javascript/jquery/jquery.js \
+		/usr/share/doc/$(pd)/html/_static/jquery.js
+	dh_link -p$(pd) /usr/share/javascript/underscore/underscore.js \
+		/usr/share/doc/$(pd)/html/_static/underscore.js
+	# link docs in python-sqlalchemy's dir
+	dh_link -p$(pd) /usr/share/doc/$(pd)/html \
+		/usr/share/doc/python3-sqlalchemy/html
+	dh_link -p$(pd) /usr/share/doc/$(pd)/rst \
+		/usr/share/doc/python3-sqlalchemy/rst
+	dh_link -p$(pd) /usr/share/javascript/sphinxdoc/1.0/searchtools.js \
+		/usr/share/doc/$(pd)/html/_static/searchtools.js
+	dh_sphinxdoc
+
+override_dh_installchangelogs:
+	dh_installchangelogs -i -p python-sqlalchemy-doc -X doc/changelog -X CHANGES
+	dh_installchangelogs -i -N python-sqlalchemy-doc -X doc/changelog -X CHANGES
+	dh_installchangelogs -a -X doc/changelog -X CHANGES
+
+override_dh_installexamples:
+	dh_installexamples -i
+	rm -rf debian/$(pd)/usr/share/doc/$(pd)/doc/build \
+	       debian/$(pd)/usr/share/doc/$(pd)/examples/README
+	rm -f debian/python3-sqlalchemy/usr/share/doc/python3-sqlalchemy/NEWS.Debian
+	find $(CURDIR)/debian/$(pd)/usr/share/doc/$(pd)/examples -name __pycache__ | xargs -r rm -rf
+
+override_dh_compress:
+	dh_compress -i -X.py -X.js -X.html -X.inv -Xrst
