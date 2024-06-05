@@ -67,9 +67,9 @@ class DeclarativeTestBase(
         global Base
 
         if self.base_style == "dynamic":
-            Base = declarative_base(testing.db)
+            Base = declarative_base()
         elif self.base_style == "explicit":
-            mapper_registry = registry(_bind=testing.db)
+            mapper_registry = registry()
 
             class Base(with_metaclass(DeclarativeMeta)):
                 __abstract__ = True
@@ -86,6 +86,32 @@ class DeclarativeTestBase(
     ("dynamic",), ("explicit",), argnames="base_style", id_="s"
 )
 class DeclarativeTest(DeclarativeTestBase):
+    def test_unbound_declarative_base(self):
+        Base = declarative_base()
+
+        class User(Base):
+            __tablename__ = "user"
+            id = Column(Integer, primary_key=True)
+
+        s = Session()
+
+        with testing.expect_raises(exc.UnboundExecutionError):
+            s.get_bind(User)
+
+    def test_unbound_cls_registry(self):
+        reg = registry()
+
+        Base = reg.generate_base()
+
+        class User(Base):
+            __tablename__ = "user"
+            id = Column(Integer, primary_key=True)
+
+        s = Session()
+
+        with testing.expect_raises(exc.UnboundExecutionError):
+            s.get_bind(User)
+
     def test_basic(self):
         class User(Base, fixtures.ComparableEntity):
             __tablename__ = "users"
@@ -380,7 +406,13 @@ class DeclarativeTest(DeclarativeTestBase):
                 id = Column(Integer, primary_key=True)
 
     def test_column_named_twice(self):
-        def go():
+        with assertions.expect_deprecated(
+            "A column with name 'x' is already present in table 'foo'"
+        ), expect_warnings(
+            "On class 'Foo', Column object 'x' named directly multiple times, "
+            "only one will be used: x, y",
+        ):
+
             class Foo(Base):
                 __tablename__ = "foo"
 
@@ -388,15 +420,14 @@ class DeclarativeTest(DeclarativeTestBase):
                 x = Column("x", Integer)
                 y = Column("x", Integer)
 
-        assert_raises_message(
-            sa.exc.SAWarning,
-            "On class 'Foo', Column object 'x' named directly multiple times, "
-            "only one will be used: x, y",
-            go,
-        )
-
     def test_column_repeated_under_prop(self):
-        def go():
+        with assertions.expect_deprecated(
+            "A column with name 'x' is already present in table 'foo'"
+        ), expect_warnings(
+            "On class 'Foo', Column object 'x' named directly multiple times, "
+            "only one will be used: x, y, z",
+        ):
+
             class Foo(Base):
                 __tablename__ = "foo"
 
@@ -404,13 +435,6 @@ class DeclarativeTest(DeclarativeTestBase):
                 x = Column("x", Integer)
                 y = column_property(x)
                 z = Column("x", Integer)
-
-        assert_raises_message(
-            sa.exc.SAWarning,
-            "On class 'Foo', Column object 'x' named directly multiple times, "
-            "only one will be used: x, y, z",
-            go,
-        )
 
     def test_using_explicit_prop_in_schema_objects(self):
         class Foo(Base):
@@ -1056,8 +1080,8 @@ class DeclarativeTest(DeclarativeTestBase):
 
     def test_shared_class_registry(self):
         reg = {}
-        Base1 = declarative_base(testing.db, class_registry=reg)
-        Base2 = declarative_base(testing.db, class_registry=reg)
+        Base1 = declarative_base(class_registry=reg)
+        Base2 = declarative_base(class_registry=reg)
 
         class A(Base1):
             __tablename__ = "a"
@@ -1185,9 +1209,9 @@ class DeclarativeTest(DeclarativeTestBase):
 
         # test [ticket:1492]
 
-        class Master(Base):
+        class Topic(Base):
 
-            __tablename__ = "master"
+            __tablename__ = "topic"
             id = Column(
                 Integer, primary_key=True, test_needs_autoincrement=True
             )
@@ -1198,23 +1222,23 @@ class DeclarativeTest(DeclarativeTestBase):
             id = Column(
                 Integer, primary_key=True, test_needs_autoincrement=True
             )
-            master_id = Column(None, ForeignKey(Master.id))
-            master = relationship(Master)
+            topic_id = Column(None, ForeignKey(Topic.id))
+            topic = relationship(Topic)
 
         Base.metadata.create_all(testing.db)
         configure_mappers()
-        assert class_mapper(Detail).get_property("master").strategy.use_get
-        m1 = Master()
-        d1 = Detail(master=m1)
+        assert class_mapper(Detail).get_property("topic").strategy.use_get
+        t1 = Topic()
+        d1 = Detail(topic=t1)
         sess = fixture_session()
         sess.add(d1)
         sess.flush()
         sess.expunge_all()
         d1 = sess.query(Detail).first()
-        m1 = sess.query(Master).first()
+        t1 = sess.query(Topic).first()
 
         def go():
-            assert d1.master
+            assert d1.topic
 
         self.assert_sql_count(testing.db, go, 0)
 
@@ -2174,15 +2198,14 @@ class DeclarativeTest(DeclarativeTestBase):
             __tablename__ = "a"
             id = Column(Integer, primary_key=True)
 
-        assert_raises_message(
-            sa.exc.SAWarning,
+        with expect_warnings(
             "This declarative base already contains a class with ",
-            lambda: type(Base)(
+        ):
+            type(Base)(
                 "Test",
                 (Base,),
                 dict(__tablename__="b", id=Column(Integer, primary_key=True)),
-            ),
-        )
+            )
 
     @testing.teardown_events(MapperEvents)
     @testing.teardown_events(InstrumentationEvents)
@@ -2326,117 +2349,3 @@ class DeclarativeTest(DeclarativeTestBase):
 
         # Check to see if __init_subclass__ works in supported versions
         eq_(UserType._set_random_keyword_used_here, True)
-
-
-# TODO: this should be using @combinations
-def _produce_test(inline, stringbased):
-    class ExplicitJoinTest(fixtures.MappedTest):
-        @classmethod
-        def define_tables(cls, metadata):
-            global User, Address
-            Base = declarative_base(metadata=metadata)
-
-            class User(Base, fixtures.ComparableEntity):
-
-                __tablename__ = "users"
-                id = Column(
-                    Integer, primary_key=True, test_needs_autoincrement=True
-                )
-                name = Column(String(50))
-
-            class Address(Base, fixtures.ComparableEntity):
-
-                __tablename__ = "addresses"
-                id = Column(
-                    Integer, primary_key=True, test_needs_autoincrement=True
-                )
-                email = Column(String(50))
-                user_id = Column(Integer, ForeignKey("users.id"))
-                if inline:
-                    if stringbased:
-                        user = relationship(
-                            "User",
-                            primaryjoin="User.id==Address.user_id",
-                            backref="addresses",
-                        )
-                    else:
-                        user = relationship(
-                            User,
-                            primaryjoin=User.id == user_id,
-                            backref="addresses",
-                        )
-
-            if not inline:
-                configure_mappers()
-                if stringbased:
-                    Address.user = relationship(
-                        "User",
-                        primaryjoin="User.id==Address.user_id",
-                        backref="addresses",
-                    )
-                else:
-                    Address.user = relationship(
-                        User,
-                        primaryjoin=User.id == Address.user_id,
-                        backref="addresses",
-                    )
-
-        @classmethod
-        def insert_data(cls, connection):
-            params = [
-                dict(list(zip(("id", "name"), column_values)))
-                for column_values in [
-                    (7, "jack"),
-                    (8, "ed"),
-                    (9, "fred"),
-                    (10, "chuck"),
-                ]
-            ]
-
-            connection.execute(User.__table__.insert(), params)
-            connection.execute(
-                Address.__table__.insert(),
-                [
-                    dict(list(zip(("id", "user_id", "email"), column_values)))
-                    for column_values in [
-                        (1, 7, "jack@bean.com"),
-                        (2, 8, "ed@wood.com"),
-                        (3, 8, "ed@bettyboop.com"),
-                        (4, 8, "ed@lala.com"),
-                        (5, 9, "fred@fred.com"),
-                    ]
-                ],
-            )
-
-        def test_aliased_join(self):
-
-            # this query will screw up if the aliasing enabled in
-            # query.join() gets applied to the right half of the join
-            # condition inside the any(). the join condition inside of
-            # any() comes from the "primaryjoin" of the relationship,
-            # and should not be annotated with _orm_adapt.
-            # PropertyLoader.Comparator will annotate the left side with
-            # _orm_adapt, though.
-
-            sess = fixture_session()
-            eq_(
-                sess.query(User)
-                .join(User.addresses, aliased=True)
-                .filter(Address.email == "ed@wood.com")
-                .filter(User.addresses.any(Address.email == "jack@bean.com"))
-                .all(),
-                [],
-            )
-
-    ExplicitJoinTest.__name__ = "ExplicitJoinTest%s%s" % (
-        inline and "Inline" or "Separate",
-        stringbased and "String" or "Literal",
-    )
-    return ExplicitJoinTest
-
-
-for inline in True, False:
-    for stringbased in True, False:
-        testclass = _produce_test(inline, stringbased)
-        exec("%s = testclass" % testclass.__name__)
-        del testclass

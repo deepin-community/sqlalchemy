@@ -346,7 +346,10 @@ class TransactionTest(fixtures.TablesTest):
         with testing.expect_warnings("nested transaction already"):
             s1.rollback()  # no error (though it warns)
 
-        t1.commit()  # no error
+        # this test was previously calling "commit", but note relies on
+        # buggy behavior in PostgreSQL as the transaction block is in fact
+        # aborted.   pg8000 enforces this on the client as of 1.29
+        t1.rollback()  # no error
 
     @testing.requires.savepoints_w_release
     def test_savepoint_release_fails_flat(self):
@@ -368,7 +371,10 @@ class TransactionTest(fixtures.TablesTest):
             assert not s1.is_active
             s1.rollback()  # no error.  prior to 1.4 this would try to rollback
 
-            t1.commit()  # no error
+            # this test was previously calling "commit", but note relies on
+            # buggy behavior in PostgreSQL as the transaction block is in fact
+            # aborted.   pg8000 enforces this on the client as of 1.29
+            t1.rollback()  # no error
 
     @testing.requires.savepoints_w_release
     def test_savepoint_release_fails_ctxmanager(self, local_connection):
@@ -486,6 +492,36 @@ class TransactionTest(fixtures.TablesTest):
         assert not connection.in_transaction()
         result = connection.exec_driver_sql("select * from users")
         assert len(result.fetchall()) == 0
+
+    @testing.requires.independent_connections
+    def test_no_rollback_in_deactive(self, local_connection):
+        """test #7388"""
+
+        def fail(*arg, **kw):
+            raise BaseException("some base exception")
+
+        with mock.patch.object(testing.db.dialect, "do_commit", fail):
+            with expect_raises_message(BaseException, "some base exception"):
+                with local_connection.begin():
+                    pass
+
+    @testing.requires.independent_connections
+    @testing.requires.savepoints
+    def test_no_rollback_in_deactive_savepoint(self, local_connection):
+        """test #7388"""
+
+        def fail(*arg, **kw):
+            raise BaseException("some base exception")
+
+        with mock.patch.object(
+            testing.db.dialect, "do_release_savepoint", fail
+        ):
+            with local_connection.begin():
+                with expect_raises_message(
+                    BaseException, "some base exception"
+                ):
+                    with local_connection.begin_nested():
+                        pass
 
     @testing.requires.savepoints
     def test_nested_subtransaction_rollback(self, local_connection):
@@ -1568,8 +1604,10 @@ class FutureTransactionTest(fixtures.FutureEngineMixin, fixtures.TablesTest):
         with testing.db.begin() as conn:
             assert_raises_message(
                 exc.InvalidRequestError,
-                "This connection has already begun a transaction; "
-                "isolation_level may not be altered until transaction end",
+                r"This connection has already initialized a SQLAlchemy "
+                r"Transaction\(\) object via begin\(\) or autobegin; "
+                r"isolation_level may not be altered unless rollback\(\) or "
+                r"commit\(\) is called first.",
                 conn.execution_options,
                 isolation_level="AUTOCOMMIT",
             )
@@ -1582,8 +1620,10 @@ class FutureTransactionTest(fixtures.FutureEngineMixin, fixtures.TablesTest):
 
             assert_raises_message(
                 exc.InvalidRequestError,
-                "This connection has already begun a transaction; "
-                "isolation_level may not be altered until transaction end",
+                r"This connection has already initialized a SQLAlchemy "
+                r"Transaction\(\) object via begin\(\) or autobegin; "
+                r"isolation_level may not be altered unless rollback\(\) or "
+                r"commit\(\) is called first.",
                 conn.execution_options,
                 isolation_level="AUTOCOMMIT",
             )
@@ -1822,7 +1862,10 @@ class FutureTransactionTest(fixtures.FutureEngineMixin, fixtures.TablesTest):
 
             assert_raises_message(
                 exc.InvalidRequestError,
-                "a transaction is already begun for this connection",
+                r"This connection has already initialized a SQLAlchemy "
+                r"Transaction\(\) object via begin\(\) or autobegin; can't "
+                r"call begin\(\) here unless rollback\(\) or commit\(\) is "
+                r"called first.",
                 conn.begin,
             )
 

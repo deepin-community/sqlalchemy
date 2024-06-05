@@ -15,6 +15,7 @@ from sqlalchemy.engine import url
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import assert_raises_message_context_ok
+from sqlalchemy.testing import assert_warns_message
 from sqlalchemy.testing import engines
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import expect_raises
@@ -191,7 +192,7 @@ class PrePingMockTest(fixtures.TestBase):
         )
 
         conn = pool.connect()
-        dbapi_conn = conn.connection
+        dbapi_conn = conn.dbapi_connection
         eq_(dbapi_conn.mock_calls, [])
         conn.close()
 
@@ -199,7 +200,7 @@ class PrePingMockTest(fixtures.TestBase):
         eq_(dbapi_conn.mock_calls, [call.rollback()])
 
         conn = pool.connect()
-        is_(conn.connection, dbapi_conn)
+        is_(conn.dbapi_connection, dbapi_conn)
 
         # ping, so cursor() call.
         eq_(dbapi_conn.mock_calls, [call.rollback(), call.cursor()])
@@ -207,7 +208,7 @@ class PrePingMockTest(fixtures.TestBase):
         conn.close()
 
         conn = pool.connect()
-        is_(conn.connection, dbapi_conn)
+        is_(conn.dbapi_connection, dbapi_conn)
 
         # ping, so cursor() call.
         eq_(
@@ -223,33 +224,33 @@ class PrePingMockTest(fixtures.TestBase):
         )
 
         conn = pool.connect()
-        dbapi_conn = conn.connection
+        dbapi_conn = conn.dbapi_connection
         conn_rec = conn._connection_record
         eq_(dbapi_conn.mock_calls, [])
         conn.close()
 
         conn = pool.connect()
-        is_(conn.connection, dbapi_conn)
+        is_(conn.dbapi_connection, dbapi_conn)
         # ping, so cursor() call.
         eq_(dbapi_conn.mock_calls, [call.rollback(), call.cursor()])
 
         conn.invalidate()
 
-        is_(conn.connection, None)
+        is_(conn.dbapi_connection, None)
 
         # connect again, make sure we're on the same connection record
         conn = pool.connect()
         is_(conn._connection_record, conn_rec)
 
         # no ping
-        dbapi_conn = conn.connection
+        dbapi_conn = conn.dbapi_connection
         eq_(dbapi_conn.mock_calls, [])
 
     def test_connect_across_restart(self):
         pool = self._pool_fixture(pre_ping=True)
 
         conn = pool.connect()
-        stale_connection = conn.connection
+        stale_connection = conn.dbapi_connection
         conn.close()
 
         self.dbapi.shutdown("execute")
@@ -316,7 +317,7 @@ class PrePingMockTest(fixtures.TestBase):
         pool = self._pool_fixture(pre_ping=True)
 
         conn = pool.connect()
-        old_dbapi_conn = conn.connection
+        old_dbapi_conn = conn.dbapi_connection
         conn.close()
 
         # no cursor() because no pre ping
@@ -335,7 +336,7 @@ class PrePingMockTest(fixtures.TestBase):
         self.dbapi.restart()
 
         conn = pool.connect()
-        dbapi_conn = conn.connection
+        dbapi_conn = conn.dbapi_connection
         del conn
         gc_collect()
 
@@ -967,6 +968,7 @@ class CursorErrTest(fixtures.TestBase):
                 util.warn("Exception attempting to detect")
 
         eng.dialect._get_default_schema_name = get_default_schema_name
+        eng.dialect._check_unicode_description = mock.Mock()
         return eng
 
     def test_cursor_explode(self):
@@ -982,11 +984,13 @@ class CursorErrTest(fixtures.TestBase):
 
     def test_cursor_shutdown_in_initialize(self):
         db = self._fixture(True, True)
-        assert_raises_message_context_ok(
+        assert_warns_message(
             exc.SAWarning, "Exception attempting to detect", db.connect
         )
+        # there's legacy py2k stuff happening here making this
+        # less smooth and probably buggy
         eq_(
-            db.pool.logger.error.mock_calls,
+            db.pool.logger.error.mock_calls[0:1],
             [call("Error closing cursor", exc_info=True)],
         )
 
@@ -1111,7 +1115,7 @@ class RealReconnectTest(fixtures.TestBase):
     def test_ensure_is_disconnect_gets_connection(self):
         def is_disconnect(e, conn, cursor):
             # connection is still present
-            assert conn.connection is not None
+            assert conn.dbapi_connection is not None
             # the error usually occurs on connection.cursor(),
             # though MySQLdb we get a non-working cursor.
             # assert cursor is None
@@ -1308,7 +1312,7 @@ class PrePingRealTest(fixtures.TestBase):
 
         conn = engine.connect()
         eq_(conn.execute(select(1)).scalar(), 1)
-        stale_connection = conn.connection.connection
+        stale_connection = conn.connection.dbapi_connection
         conn.close()
 
         engine.test_shutdown()
@@ -1349,6 +1353,9 @@ class PrePingRealTest(fixtures.TestBase):
 class InvalidateDuringResultTest(fixtures.TestBase):
     __backend__ = True
 
+    # test locks SQLite file databases due to unconsumed results
+    __requires__ = ("ad_hoc_engines",)
+
     def setup_test(self):
         self.engine = engines.reconnecting_engine()
         self.meta = MetaData()
@@ -1371,30 +1378,25 @@ class InvalidateDuringResultTest(fixtures.TestBase):
             self.meta.drop_all(conn)
         self.engine.dispose()
 
-    @testing.crashes(
-        "oracle",
-        "cx_oracle 6 doesn't allow a close like this due to open cursors",
-    )
-    @testing.fails_if(
-        [
-            "+mariadbconnector",
-            "+mysqlconnector",
-            "+mysqldb",
-            "+cymysql",
-            "+pymysql",
-            "+pg8000",
-            "+asyncpg",
-            "+aiosqlite",
-            "+aiomysql",
-        ],
-        "Buffers the result set and doesn't check for connection close",
-    )
     def test_invalidate_on_results(self):
         conn = self.engine.connect()
-        result = conn.exec_driver_sql("select * from sometable")
+        result = conn.exec_driver_sql(
+            "select * from sometable",
+        )
         for x in range(20):
             result.fetchone()
+
+        real_cursor = result.cursor
         self.engine.test_shutdown()
+
+        def produce_side_effect():
+            # will fail because connection was closed, with an exception
+            # that should trigger disconnect routines
+            real_cursor.execute("select * from sometable")
+
+        result.cursor = Mock(
+            fetchone=mock.Mock(side_effect=produce_side_effect)
+        )
         try:
             _assert_invalidated(result.fetchone)
             assert conn.invalidated

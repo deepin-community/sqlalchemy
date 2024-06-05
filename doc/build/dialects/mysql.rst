@@ -19,15 +19,49 @@ MySQL Data Types
 As with all SQLAlchemy dialects, all UPPERCASE types that are known to be
 valid with MySQL are importable from the top level dialect::
 
-    from sqlalchemy.dialects.mysql import \
-            BIGINT, BINARY, BIT, BLOB, BOOLEAN, CHAR, DATE, \
-            DATETIME, DECIMAL, DECIMAL, DOUBLE, ENUM, FLOAT, INTEGER, \
-            LONGBLOB, LONGTEXT, MEDIUMBLOB, MEDIUMINT, MEDIUMTEXT, NCHAR, \
-            NUMERIC, NVARCHAR, REAL, SET, SMALLINT, TEXT, TIME, TIMESTAMP, \
-            TINYBLOB, TINYINT, TINYTEXT, VARBINARY, VARCHAR, YEAR
+    from sqlalchemy.dialects.mysql import (
+        BIGINT,
+        BINARY,
+        BIT,
+        BLOB,
+        BOOLEAN,
+        CHAR,
+        DATE,
+        DATETIME,
+        DECIMAL,
+        DECIMAL,
+        DOUBLE,
+        ENUM,
+        FLOAT,
+        INTEGER,
+        LONGBLOB,
+        LONGTEXT,
+        MEDIUMBLOB,
+        MEDIUMINT,
+        MEDIUMTEXT,
+        NCHAR,
+        NUMERIC,
+        NVARCHAR,
+        REAL,
+        SET,
+        SMALLINT,
+        TEXT,
+        TIME,
+        TIMESTAMP,
+        TINYBLOB,
+        TINYINT,
+        TINYTEXT,
+        VARBINARY,
+        VARCHAR,
+        YEAR,
+    )
 
 Types which are specific to MySQL, or have MySQL-specific
 construction arguments, are as follows:
+
+.. note: where :noindex: is used, indicates a type that is not redefined
+   in the dialect module, just imported from sqltypes.  this avoids warnings
+   in the sphinx build
 
 .. currentmodule:: sqlalchemy.dialects.mysql
 
@@ -36,6 +70,7 @@ construction arguments, are as follows:
 
 
 .. autoclass:: BINARY
+    :noindex:
     :members: __init__
 
 
@@ -45,10 +80,12 @@ construction arguments, are as follows:
 
 .. autoclass:: BLOB
     :members: __init__
+    :noindex:
 
 
 .. autoclass:: BOOLEAN
     :members: __init__
+    :noindex:
 
 
 .. autoclass:: CHAR
@@ -57,6 +94,7 @@ construction arguments, are as follows:
 
 .. autoclass:: DATE
     :members: __init__
+    :noindex:
 
 
 .. autoclass:: DATETIME
@@ -69,7 +107,7 @@ construction arguments, are as follows:
 
 .. autoclass:: DOUBLE
     :members: __init__
-
+    :noindex:
 
 .. autoclass:: ENUM
     :members: __init__
@@ -131,6 +169,7 @@ construction arguments, are as follows:
 
 .. autoclass:: TEXT
     :members: __init__
+    :noindex:
 
 
 .. autoclass:: TIME
@@ -155,6 +194,7 @@ construction arguments, are as follows:
 
 .. autoclass:: VARBINARY
     :members: __init__
+    :noindex:
 
 
 .. autoclass:: VARCHAR
@@ -184,10 +224,23 @@ PyMySQL
 
 .. automodule:: sqlalchemy.dialects.mysql.pymysql
 
+MariaDB-Connector
+------------------
+
+.. automodule:: sqlalchemy.dialects.mysql.mariadbconnector
+
 MySQL-Connector
 ---------------
 
 .. automodule:: sqlalchemy.dialects.mysql.mysqlconnector
+
+.. _asyncmy:
+
+asyncmy
+-------
+
+.. automodule:: sqlalchemy.dialects.mysql.asyncmy
+
 
 .. _aiomysql:
 
@@ -210,4 +263,3 @@ pyodbc
 ------
 
 .. automodule:: sqlalchemy.dialects.mysql.pyodbc
-

@@ -36,6 +36,7 @@ extensions = [
     "zzzeeksphinx",
     "changelog",
     "sphinx_paramlinks",
+    "sphinx_copybutton",
 ]
 needs_extensions = {"zzzeeksphinx": "1.2.1"}
 
@@ -43,6 +44,18 @@ needs_extensions = {"zzzeeksphinx": "1.2.1"}
 # not sure why abspath() is needed here, some users
 # have reported this.
 templates_path = [os.path.abspath("templates")]
+
+# https://sphinx-copybutton.readthedocs.io/en/latest/use.html#strip-and-configure-input-prompts-for-code-cells
+copybutton_prompt_text = (
+    r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: "
+)
+copybutton_prompt_is_regexp = True
+
+# workaround
+# https://sphinx-copybutton-exclude-issue.readthedocs.io/en/v0.5.1-go/
+# https://github.com/executablebooks/sphinx-copybutton/issues/185
+# while we're at it, add our SQL css classes to also not be copied
+copybutton_exclude = ".linenos .show_sql .show_sql_print .popup_sql"
 
 nitpicky = False
 
@@ -58,6 +71,7 @@ changelog_sections = [
     "orm declarative",
     "orm querying",
     "orm configuration",
+    "examples",
     "engine",
     "sql",
     "schema",
@@ -66,10 +80,12 @@ changelog_sections = [
     "asyncio",
     "postgresql",
     "mysql",
+    "mariadb",
     "sqlite",
     "mssql",
     "oracle",
     "firebird",
+    "tests",
 ]
 # tags to sort on inside of sections
 changelog_inner_tag_sort = [
@@ -96,7 +112,7 @@ changelog_render_pullreq = {
 
 changelog_render_changeset = "https://www.sqlalchemy.org/trac/changeset/%s"
 
-exclude_patterns = ["build", "**/unreleased*/*", "*_include.rst"]
+exclude_patterns = ["build", "**/unreleased*/*", "**/*_include.rst", ".venv"]
 
 # zzzeeksphinx makes these conversions when it is rendering the
 # docstrings classes, methods, and functions within the scope of
@@ -144,6 +160,7 @@ zzzeeksphinx_module_prefixes = {
     "_row": "sqlalchemy.engine",
     "_schema": "sqlalchemy.schema",
     "_types": "sqlalchemy.types",
+    "_sqltypes": "sqlalchemy.types",
     "_asyncio": "sqlalchemy.ext.asyncio",
     "_expression": "sqlalchemy.sql.expression",
     "_sql": "sqlalchemy.sql.expression",
@@ -151,13 +168,19 @@ zzzeeksphinx_module_prefixes = {
     "_ddl": "sqlalchemy.schema",
     "_functions": "sqlalchemy.sql.functions",
     "_pool": "sqlalchemy.pool",
+    # base event API, like listen() etc.
     "_event": "sqlalchemy.event",
+    # core events like PoolEvents, ConnectionEvents
     "_events": "sqlalchemy.events",
+    # note Core events are linked as sqlalchemy.event.<cls>
+    # ORM is sqlalchemy.orm.<cls>.
+    "_ormevent": "sqlalchemy.orm",
+    "_ormevents": "sqlalchemy.orm",
+    "_scoping": "sqlalchemy.orm.scoping",
     "_exc": "sqlalchemy.exc",
     "_reflection": "sqlalchemy.engine.reflection",
     "_orm": "sqlalchemy.orm",
     "_query": "sqlalchemy.orm",
-    "_ormevent": "sqlalchemy.orm.event",
     "_ormexc": "sqlalchemy.orm.exc",
     "_roles": "sqlalchemy.sql.roles",
     "_baked": "sqlalchemy.ext.baked",
@@ -187,7 +210,7 @@ master_doc = "contents"
 
 # General information about the project.
 project = u"SQLAlchemy"
-copyright = u"2007-2021, the SQLAlchemy authors and contributors"  # noqa
+copyright = u"2007-2023, the SQLAlchemy authors and contributors"  # noqa
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -196,9 +219,9 @@ copyright = u"2007-2021, the SQLAlchemy authors and contributors"  # noqa
 # The short X.Y version.
 version = "1.4"
 # The full version, including alpha/beta/rc tags.
-release = "1.4.23"
+release = "1.4.50"
 
-release_date = "August 18, 2021"
+release_date = "October 29, 2023"
 
 site_base = os.environ.get("RTD_SITE_BASE", "https://www.sqlalchemy.org")
 site_adapter_template = "docs_adapter.mako"

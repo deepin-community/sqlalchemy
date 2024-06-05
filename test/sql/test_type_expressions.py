@@ -24,7 +24,7 @@ class _ExprFixture(object):
     def _fixture(self):
         class MyString(String):
 
-            # supercedes any processing that might be on
+            # supersedes any processing that might be on
             # String
             def bind_expression(self, bindvalue):
                 return func.lower(bindvalue)
@@ -181,6 +181,41 @@ class SelectTest(_ExprFixture, fixtures.TestBase, AssertsCompiledSQL):
             "SELECT test_table.x, lower(test_table.y) AS y FROM "
             "test_table WHERE test_table.y = lower(:y_1)",
         )
+
+    @testing.variation(
+        "compile_opt", ["plain", "postcompile", "literal_binds"]
+    )
+    def test_in_binds(self, compile_opt):
+        table = self._fixture()
+
+        stmt = select(table).where(
+            table.c.y.in_(["hi", "there", "some", "expr"])
+        )
+
+        if compile_opt.plain:
+            self.assert_compile(
+                stmt,
+                "SELECT test_table.x, lower(test_table.y) AS y FROM "
+                "test_table WHERE test_table.y IN "
+                "(__[POSTCOMPILE_y_1~~lower(~~REPL~~)~~])",
+                render_postcompile=False,
+            )
+        elif compile_opt.postcompile:
+            self.assert_compile(
+                stmt,
+                "SELECT test_table.x, lower(test_table.y) AS y FROM "
+                "test_table WHERE test_table.y IN "
+                "(lower(:y_1_1), lower(:y_1_2), lower(:y_1_3), lower(:y_1_4))",
+                render_postcompile=True,
+            )
+        elif compile_opt.literal_binds:
+            self.assert_compile(
+                stmt,
+                "SELECT test_table.x, lower(test_table.y) AS y FROM "
+                "test_table WHERE test_table.y IN "
+                "(lower('hi'), lower('there'), lower('some'), lower('expr'))",
+                literal_binds=True,
+            )
 
     def test_dialect(self):
         table = self._fixture()

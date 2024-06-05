@@ -5,6 +5,7 @@ import sys
 import tempfile
 
 from sqlalchemy import testing
+from sqlalchemy import util
 from sqlalchemy.testing import config
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
@@ -63,9 +64,25 @@ class MypyPluginTest(fixtures.TestBase):
                 ),
             ]
 
-            args.append(path)
+            if incremental:
+                args.append(path)
+            else:
+                # mypy as of 0.990 is more aggressively blocking messaging
+                # for paths that are in sys.path, and as pytest puts currdir,
+                # test/ etc in sys.path, just copy the source file to the
+                # tempdir we are working in so that we don't have to try to
+                # manipulate sys.path and/or guess what mypy is doing
+                filename = os.path.basename(path)
+                test_program = os.path.join(cachedir, filename)
+                shutil.copyfile(path, test_program)
+                args.append(test_program)
 
-            return api.run(args)
+            # I set this locally but for the suite here needs to be
+            # disabled
+            os.environ.pop("MYPY_FORCE_COLOR", None)
+
+            result = api.run(args)
+            return result
 
         return run
 
@@ -156,6 +173,9 @@ class MypyPluginTest(fixtures.TestBase):
         expected_errors = []
         expected_re = re.compile(r"\s*# EXPECTED(_MYPY)?: (.+)")
         py_ver_re = re.compile(r"^#\s*PYTHON_VERSION\s?>=\s?(\d+\.\d+)")
+
+        from sqlalchemy.ext.mypy.util import mypy_14
+
         with open(path) as file_:
             for num, line in enumerate(file_, 1):
                 m = py_ver_re.match(line)
@@ -174,15 +194,41 @@ class MypyPluginTest(fixtures.TestBase):
                 if m:
                     is_mypy = bool(m.group(1))
                     expected_msg = m.group(2)
-                    expected_msg = re.sub(r"# noqa ?.*", "", m.group(2))
+                    expected_msg = re.sub(r"# noqa[:]? ?.*", "", m.group(2))
+
+                    if mypy_14 and util.py39:
+                        # use_lowercase_names, py39 and above
+                        # https://github.com/python/mypy/blob/304997bfb85200fb521ac727ee0ce3e6085e5278/mypy/options.py#L363  # noqa: E501
+
+                        # skip first character which could be capitalized
+                        # "List item x not found" type of message
+                        expected_msg = expected_msg[0] + re.sub(
+                            r"\b(List|Tuple|Dict|Set|Type)\b",
+                            lambda m: m.group(1).lower(),
+                            expected_msg[1:],
+                        )
+
+                    if mypy_14 and util.py310:
+                        # use_or_syntax, py310 and above
+                        # https://github.com/python/mypy/blob/304997bfb85200fb521ac727ee0ce3e6085e5278/mypy/options.py#L368  # noqa: E501
+                        expected_msg = re.sub(
+                            r"Optional\[(.*?)\]",
+                            lambda m: f"{m.group(1)} | None",
+                            expected_msg,
+                        )
+
                     expected_errors.append(
                         (num, is_mypy, expected_msg.strip())
                     )
 
         result = mypy_runner(path, use_plugin=use_plugin)
 
+        not_located = []
+
         if expected_errors:
-            eq_(result[2], 1, msg=result)
+            # mypy 0.990 changed how return codes work, so don't assume a
+            # 1 or a 0 return code here, could be either depending on if
+            # errors were generated or not
 
             print(result[0])
 
@@ -201,8 +247,13 @@ class MypyPluginTest(fixtures.TestBase):
                     ):
                         break
                 else:
+                    not_located.append(msg)
                     continue
                 del errors[idx]
+
+            if not_located:
+                print(f"Couldn't locate expected messages: {not_located}")
+                assert False, "expected messages not found, see stdout"
 
             assert not errors, "errors remain: %s" % "\n".join(errors)
 

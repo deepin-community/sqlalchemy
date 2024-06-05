@@ -19,7 +19,7 @@ function (note the Python ``print`` function also calls ``str()`` automatically
 if we don't use it explicitly)::
 
     >>> from sqlalchemy import table, column, select
-    >>> t = table('my_table', column('x'))
+    >>> t = table("my_table", column("x"))
     >>> statement = select(t)
     >>> print(str(statement))
     SELECT my_table.x
@@ -31,7 +31,7 @@ The ``str()`` builtin, or an equivalent, can be invoked on ORM
 as::
 
     >>> from sqlalchemy import column
-    >>> print(column('x') == 'some value')
+    >>> print(column("x") == "some value")
     x = :x_1
 
 Stringifying for Specific Databases
@@ -59,7 +59,15 @@ instantiate a :class:`.Dialect` object directly, as below where we
 use a PostgreSQL dialect::
 
     from sqlalchemy.dialects import postgresql
+
     print(statement.compile(dialect=postgresql.dialect()))
+
+Note that any dialect can be assembled using :func:`_sa.create_engine` itself
+with a dummy URL and then accessing the :attr:`_engine.Engine.dialect` attribute,
+such as if we wanted a dialect object for psycopg2::
+
+    e = create_engine("postgresql+psycopg2://")
+    psycopg2_dialect = e.dialect
 
 When given an ORM :class:`~.orm.query.Query` object, in order to get at the
 :meth:`_expression.ClauseElement.compile`
@@ -72,7 +80,7 @@ accessor first::
 Rendering Bound Parameters Inline
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. warning:: **Never** use this technique with string content received from
+.. warning:: **Never** use these techniques with string content received from
    untrusted input, such as from web forms or other user-input applications.
    SQLAlchemy's facilities to  coerce Python values into direct SQL string
    values are **not secure against untrusted input and do not validate the type
@@ -91,51 +99,199 @@ flag, passed to ``compile_kwargs``::
 
     from sqlalchemy.sql import table, column, select
 
-    t = table('t', column('x'))
+    t = table("t", column("x"))
 
     s = select(t).where(t.c.x == 5)
 
     # **do not use** with untrusted input!!!
     print(s.compile(compile_kwargs={"literal_binds": True}))
 
-The above approach has the caveats that it is only supported for basic
-types, such as ints and strings, and furthermore if a :func:`.bindparam`
-without a pre-set value is used directly, it won't be able to
-stringify that either.
+    # to render for a specific dialect
+    print(s.compile(dialect=dialect, compile_kwargs={"literal_binds": True}))
 
-This functionality is provided mainly for
-logging or debugging purposes, where having the raw sql string of a query
-may prove useful.  Note that the ``dialect`` parameter should also
-passed to the :meth:`_expression.ClauseElement.compile` method to render
-the query that will be sent to the database.
+    # or if you have an Engine, pass as first argument
+    print(s.compile(some_engine, compile_kwargs={"literal_binds": True}))
 
-To support inline literal rendering for types not supported, implement
-a :class:`.TypeDecorator` for the target type which includes a
-:meth:`.TypeDecorator.process_literal_param` method::
+This functionality is provided mainly for logging or debugging purposes, where
+having the raw sql string of a query may prove useful.
 
-    from sqlalchemy import TypeDecorator, Integer
+The above approach has the caveats that it is only supported for basic types,
+such as ints and strings, and furthermore if a :func:`.bindparam` without a
+pre-set value is used directly, it won't be able to stringify that either.
+Methods of stringifying all parameters unconditionally are detailed below.
+
+.. tip::
+
+   The reason SQLAlchemy does not support full stringification of all
+   datatypes is threefold:
+
+   1. This is a functionality that is already supported by the DBAPI in use
+      when the DBAPI is used normally.   The SQLAlchemy project cannot be
+      tasked with duplicating this functionality for every datatype for
+      all backends, as this is redundant work which also incurs significant
+      testing and ongoing support overhead.
+
+   2. Stringifying with bound parameters inlined for specific databases
+      suggests a usage that is actually passing these fully stringified
+      statements onto the database for execution. This is unnecessary and
+      insecure, and SQLAlchemy does not want to encourage this use in any
+      way.
+
+   3. The area of rendering literal values is the most likely area for
+      security issues to be reported.  SQLAlchemy tries to keep the area of
+      safe parameter stringification an issue for the DBAPI drivers as much
+      as possible where the specifics for each DBAPI can be handled
+      appropriately and securely.
+
+As SQLAlchemy intentionally does not support full stringification of literal
+values, techniques to do so within specific debugging scenarios include the
+following. As an example, we will use the PostgreSQL :class:`_postgresql.UUID`
+datatype::
+
+    import uuid
+
+    from sqlalchemy import Column
+    from sqlalchemy import create_engine
+    from sqlalchemy import Integer
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import UUID
+    from sqlalchemy.orm import declarative_base
 
 
-    class MyFancyType(TypeDecorator):
-        impl = Integer
+    Base = declarative_base()
+
+
+    class A(Base):
+        __tablename__ = "a"
+
+        id = Column(Integer, primary_key=True)
+        data = Column(UUID)
+
+
+    stmt = select(A).where(A.data == uuid.uuid4())
+
+Given the above model and statement which will compare a column to a single
+UUID value, options for stringifying this statement with inline values
+include:
+
+* Some DBAPIs such as psycopg2 support helper functions like
+  `mogrify() <https://www.psycopg.org/docs/cursor.html#cursor.mogrify>`_ which
+  provide access to their literal-rendering functionality.   To use such
+  features, render the SQL string without using ``literal_binds`` and pass
+  the parameters separately via the :attr:`.SQLCompiler.params` accessor::
+
+      e = create_engine("postgresql+psycopg2://scott:tiger@localhost/test")
+
+      with e.connect() as conn:
+          cursor = conn.connection.cursor()
+          compiled = stmt.compile(e)
+
+          print(cursor.mogrify(str(compiled), compiled.params))
+
+  The above code will produce psycopg2's raw bytestring::
+
+      b"SELECT a.id, a.data \nFROM a \nWHERE a.data = 'a511b0fc-76da-4c47-a4b4-716a8189b7ac'::uuid"
+
+* Render the :attr:`.SQLCompiler.params` directly into the statement, using
+  the appropriate `paramstyle <https://www.python.org/dev/peps/pep-0249/#paramstyle>`_
+  of the target DBAPI.  For example, the psycopg2 DBAPI uses the named ``pyformat``
+  style.  The meaning of ``render_postcompile`` will be discussed in the next
+  section.   **WARNING this is NOT secure, do NOT use untrusted input**::
+
+    e = create_engine("postgresql+psycopg2://")
+
+    # will use pyformat style, i.e. %(paramname)s for param
+    compiled = stmt.compile(e, compile_kwargs={"render_postcompile": True})
+
+    print(str(compiled) % compiled.params)
+
+  This will produce a non-working string, that nonetheless is suitable for
+  debugging::
+
+    SELECT a.id, a.data
+    FROM a
+    WHERE a.data = 9eec1209-50b4-4253-b74b-f82461ed80c1
+
+  Another example using a positional paramstyle such as ``qmark``, we can render
+  our above statement in terms of SQLite by also using the
+  :attr:`.SQLCompiler.positiontup` collection in conjunction with
+  :attr:`.SQLCompiler.params`, in order to retrieve the parameters in
+  their positional order for the statement as compiled::
+
+    import re
+
+    e = create_engine("sqlite+pysqlite://")
+
+    # will use qmark style, i.e. ? for param
+    compiled = stmt.compile(e, compile_kwargs={"render_postcompile": True})
+
+    # params in positional order
+    params = (repr(compiled.params[name]) for name in compiled.positiontup)
+
+    print(re.sub(r"\?", lambda m: next(params), str(compiled)))
+
+  The above snippet prints::
+
+    SELECT a.id, a.data
+    FROM a
+    WHERE a.data = UUID('1bd70375-db17-4d8c-94f1-fc2ef3aada26')
+
+* Use the :ref:`sqlalchemy.ext.compiler_toplevel` extension to render
+  :class:`_sql.BindParameter` objects in a custom way when a user-defined
+  flag is present.  This flag is sent through the ``compile_kwargs``
+  dictionary like any other flag::
+
+    from sqlalchemy.ext.compiler import compiles
+    from sqlalchemy.sql.expression import BindParameter
+
+
+    @compiles(BindParameter)
+    def _render_literal_bindparam(element, compiler, use_my_literal_recipe=False, **kw):
+        if not use_my_literal_recipe:
+            # use normal bindparam processing
+            return compiler.visit_bindparam(element, **kw)
+
+        # if use_my_literal_recipe was passed to compiler_kwargs,
+        # render the value directly
+        return repr(element.value)
+
+
+    e = create_engine("postgresql+psycopg2://")
+    print(stmt.compile(e, compile_kwargs={"use_my_literal_recipe": True}))
+
+  The above recipe will print::
+
+    SELECT a.id, a.data
+    FROM a
+    WHERE a.data = UUID('47b154cd-36b2-42ae-9718-888629ab9857')
+
+* For type-specific stringification that's built into a model or a statement, the
+  :class:`_types.TypeDecorator` class may be used to provide custom stringification
+  of any datatype using the :meth:`.TypeDecorator.process_literal_param` method::
+
+    from sqlalchemy import TypeDecorator
+
+
+    class UUIDStringify(TypeDecorator):
+        impl = UUID
 
         def process_literal_param(self, value, dialect):
-            return "my_fancy_formatting(%s)" % value
+            return repr(value)
 
-    from sqlalchemy import Table, Column, MetaData
+  The above datatype needs to be used either explicitly within the model
+  or locally within the statement using :func:`_sql.type_coerce`, such as ::
 
-    tab = Table('mytable', MetaData(), Column('x', MyFancyType()))
+    from sqlalchemy import type_coerce
 
-    stmt = tab.select().where(tab.c.x > 5)
-    print(stmt.compile(compile_kwargs={"literal_binds": True}))
+    stmt = select(A).where(type_coerce(A.data, UUIDStringify) == uuid.uuid4())
 
-producing output like::
+    print(stmt.compile(e, compile_kwargs={"literal_binds": True}))
 
-    SELECT mytable.x
-    FROM mytable
-    WHERE mytable.x > my_fancy_formatting(5)
+  Again printing the same form::
 
-
+    SELECT a.id, a.data
+    FROM a
+    WHERE a.data = UUID('47b154cd-36b2-42ae-9718-888629ab9857')
 
 Rendering "POSTCOMPILE" Parameters as Bound Parameters
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -149,23 +305,59 @@ known values are passed.   "Expanding" parameters are used for
 string can be safely cached independently of the actual lists of values
 being passed to a particular invocation of :meth:`_sql.ColumnOperators.in_`::
 
-    >>> from sqlalchemy import column
-    >>> expr = column('x').in_([1, 2, 3])
-    >>> print(expr)
-    x IN ([POSTCOMPILE_x_1])
+  >>> stmt = select(A).where(A.id.in_[1, 2, 3])
 
 To render the IN clause with real bound parameter symbols, use the
 ``render_postcompile=True`` flag with :meth:`_sql.ClauseElement.compile`::
 
-    >>> print(expr.compile(compile_kwargs={"render_postcompile": True}))
-    x IN (:x_1_1, :x_1_2, :x_1_3)
+  >>> e = create_engine("postgresql+psycopg2://")
+  >>> print(stmt.compile(e, compile_kwargs={"render_postcompile": True}))
+  SELECT a.id, a.data
+  FROM a
+  WHERE a.id IN (%(id_1_1)s, %(id_1_2)s, %(id_1_3)s)
 
-As described in the previous section, the ``literal_binds`` flag works here
-by automatically setting ``render_postcompile`` to True::
+The ``literal_binds`` flag, described in the previous section regarding
+rendering of bound parameters, automatically sets ``render_postcompile`` to
+True, so for a statement with simple ints/strings, these can be stringified
+directly::
 
-    >>> print(expr.compile(compile_kwargs={"literal_binds": True}))
-    x IN (1, 2, 3)
+  # render_postcompile is implied by literal_binds
+  >>> print(stmt.compile(e, compile_kwargs={"literal_binds": True}))
+  SELECT a.id, a.data
+  FROM a
+  WHERE a.id IN (1, 2, 3)
 
+The :attr:`.SQLCompiler.params` and :attr:`.SQLCompiler.positiontup` are
+also compatible with ``render_postcompile``, so that
+the previous recipes for rendering inline bound parameters will work here
+in the same way, such as SQLite's positional form::
+
+  >>> u1, u2, u3 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+  >>> stmt = select(A).where(A.data.in_([u1, u2, u3]))
+
+  >>> import re
+  >>> e = create_engine("sqlite+pysqlite://")
+  >>> compiled = stmt.compile(e, compile_kwargs={"render_postcompile": True})
+  >>> params = (repr(compiled.params[name]) for name in compiled.positiontup)
+  >>> print(re.sub(r"\?", lambda m: next(params), str(compiled)))
+  SELECT a.id, a.data
+  FROM a
+  WHERE a.data IN (UUID('aa1944d6-9a5a-45d5-b8da-0ba1ef0a4f38'), UUID('a81920e6-15e2-4392-8a3c-d775ffa9ccd2'), UUID('b5574cdb-ff9b-49a3-be52-dbc89f087bfa'))
+
+.. warning::
+
+    Remember, **all** of the above code recipes which stringify literal
+    values, bypassing the use of bound parameters when sending statements
+    to the database, are **only to be used when**:
+
+    1. the use is **debugging purposes only**
+
+    2. the string **is not to be passed to a live production database**
+
+    3. only with **local, trusted input**
+
+    The above recipes for stringification of literal values are **not secure in
+    any way and should never be used against production databases**.
 
 .. _faq_sql_expression_percent_signs:
 
@@ -230,13 +422,13 @@ I'm using op() to generate a custom operator and my parenthesis are not coming o
 The :meth:`.Operators.op` method allows one to create a custom database operator
 otherwise not known by SQLAlchemy::
 
-    >>> print(column('q').op('->')(column('p')))
+    >>> print(column("q").op("->")(column("p")))
     q -> p
 
 However, when using it on the right side of a compound expression, it doesn't
 generate parenthesis as we expect::
 
-    >>> print((column('q1') + column('q2')).op('->')(column('p')))
+    >>> print((column("q1") + column("q2")).op("->")(column("p")))
     q1 + q2 -> p
 
 Where above, we probably want ``(q1 + q2) -> p``.
@@ -246,14 +438,14 @@ the :paramref:`.Operators.op.precedence` parameter, to a high
 number, where 100 is the maximum value, and the highest number used by any
 SQLAlchemy operator is currently 15::
 
-    >>> print((column('q1') + column('q2')).op('->', precedence=100)(column('p')))
+    >>> print((column("q1") + column("q2")).op("->", precedence=100)(column("p")))
     (q1 + q2) -> p
 
 We can also usually force parenthesization around a binary expression (e.g.
 an expression that has left/right operands and an operator) using the
 :meth:`_expression.ColumnElement.self_group` method::
 
-    >>> print((column('q1') + column('q2')).self_group().op('->')(column('p')))
+    >>> print((column("q1") + column("q2")).self_group().op("->")(column("p")))
     (q1 + q2) -> p
 
 Why are the parentheses rules like this?
@@ -265,7 +457,7 @@ generate parenthesis based on groupings, it uses operator precedence and if the
 operator is known to be associative, so that parenthesis are generated
 minimally. Otherwise, an expression like::
 
-    column('a') & column('b') & column('c') & column('d')
+    column("a") & column("b") & column("c") & column("d")
 
 would produce::
 
@@ -275,7 +467,7 @@ which is fine but would probably annoy people (and be reported as a bug). In
 other cases, it leads to things that are more likely to confuse databases or at
 the very least readability, such as::
 
-  column('q', ARRAY(Integer, dimensions=2))[5][6]
+  column("q", ARRAY(Integer, dimensions=2))[5][6]
 
 would produce::
 
@@ -292,16 +484,16 @@ What if we defaulted the value of :paramref:`.Operators.op.precedence` to 100,
 e.g. the highest?  Then this expression makes more parenthesis, but is
 otherwise OK, that is, these two are equivalent::
 
-    >>> print((column('q') - column('y')).op('+', precedence=100)(column('z')))
+    >>> print((column("q") - column("y")).op("+", precedence=100)(column("z")))
     (q - y) + z
-    >>> print((column('q') - column('y')).op('+')(column('z')))
+    >>> print((column("q") - column("y")).op("+")(column("z")))
     q - y + z
 
 but these two are not::
 
-    >>> print(column('q') - column('y').op('+', precedence=100)(column('z')))
+    >>> print(column("q") - column("y").op("+", precedence=100)(column("z")))
     q - y + z
-    >>> print(column('q') - column('y').op('+')(column('z')))
+    >>> print(column("q") - column("y").op("+")(column("z")))
     q - (y + z)
 
 For now, it's not clear that as long as we are doing parenthesization based on

@@ -1,10 +1,12 @@
 # coding: utf-8
 
+import itertools
 import re
 
 from sqlalchemy import bindparam
 from sqlalchemy import Computed
 from sqlalchemy import create_engine
+from sqlalchemy import Enum
 from sqlalchemy import exc
 from sqlalchemy import Float
 from sqlalchemy import func
@@ -32,6 +34,7 @@ from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import mock
 from sqlalchemy.testing.mock import Mock
 from sqlalchemy.testing.schema import Column
+from sqlalchemy.testing.schema import pep435_enum
 from sqlalchemy.testing.schema import Table
 from sqlalchemy.testing.suite import test_select
 from sqlalchemy.util import u
@@ -58,7 +61,7 @@ class DialectTest(fixtures.TestBase):
                 exc.InvalidRequestError,
                 "cx_Oracle version 5.2 and above are supported",
                 cx_oracle.OracleDialect_cx_oracle,
-                dbapi=Mock(),
+                dbapi=mock.Mock(),
             )
 
         with mock.patch(
@@ -66,12 +69,60 @@ class DialectTest(fixtures.TestBase):
             "_parse_cx_oracle_ver",
             lambda self, vers: (5, 3, 1),
         ):
-            cx_oracle.OracleDialect_cx_oracle(dbapi=Mock())
+            cx_oracle.OracleDialect_cx_oracle(dbapi=mock.Mock())
 
 
 class DialectWBackendTest(fixtures.TestBase):
     __backend__ = True
     __only_on__ = "oracle"
+
+    @testing.combinations(
+        (
+            "db is not connected",
+            None,
+            True,
+        ),
+        (
+            "ORA-1234 fake error",
+            1234,
+            False,
+        ),
+        (
+            "ORA-03114: not connected to ORACLE",
+            3114,
+            True,
+        ),
+        (
+            "DPI-1010: not connected",
+            None,
+            True,
+        ),
+        (
+            "DPI-1010: make sure we read the code",
+            None,
+            True,
+        ),
+        (
+            "DPI-1080: connection was closed by ORA-3113",
+            None,
+            True,
+        ),
+        (
+            "DPI-1234: some other DPI error",
+            None,
+            False,
+        ),
+    )
+    @testing.only_on("oracle+cx_oracle")
+    def test_is_disconnect(self, message, code, expected):
+
+        dialect = testing.db.dialect
+
+        exception_obj = dialect.dbapi.InterfaceError()
+        exception_obj.args = (Exception(message),)
+        exception_obj.args[0].code = code
+
+        eq_(dialect.is_disconnect(exception_obj, None, None), expected)
 
     def test_hypothetical_not_implemented_isolation_level(self):
         engine = engines.testing_engine()
@@ -516,6 +567,23 @@ class QuotedBindRoundTripTest(fixtures.TestBase):
             4,
         )
 
+    def test_param_w_processors(self, metadata, connection):
+        """test #8053"""
+
+        SomeEnum = pep435_enum("SomeEnum")
+        one = SomeEnum("one", 1)
+        SomeEnum("two", 2)
+
+        t = Table(
+            "t",
+            metadata,
+            Column("_id", Integer, primary_key=True),
+            Column("_data", Enum(SomeEnum)),
+        )
+        t.create(connection)
+        connection.execute(t.insert(), {"_id": 1, "_data": one})
+        eq_(connection.scalar(select(t.c._data)), one)
+
     def test_numeric_bind_in_crud(self, metadata, connection):
         t = Table("asfd", metadata, Column("100K", Integer))
         t.create(connection)
@@ -531,6 +599,35 @@ class QuotedBindRoundTripTest(fixtures.TestBase):
             select(t).where(t.c.foo.in_(bindparam("uid", expanding=True))),
             dict(uid=[1, 2, 3]),
         )
+
+    @testing.combinations(True, False, argnames="executemany")
+    def test_python_side_default(self, metadata, connection, executemany):
+        """test #7676"""
+
+        ids = ["a", "b", "c"]
+
+        def gen_id():
+            return ids.pop(0)
+
+        t = Table(
+            "has_id",
+            metadata,
+            Column("_id", String(50), default=gen_id, primary_key=True),
+            Column("_data", Integer),
+        )
+        metadata.create_all(connection)
+
+        if executemany:
+            result = connection.execute(
+                t.insert(), [{"_data": 27}, {"_data": 28}, {"_data": 29}]
+            )
+            eq_(
+                connection.execute(t.select().order_by(t.c._id)).all(),
+                [("a", 27), ("b", 28), ("c", 29)],
+            )
+        else:
+            result = connection.execute(t.insert(), {"_data": 27})
+            eq_(result.inserted_primary_key, ("a",))
 
 
 class CompatFlagsTest(fixtures.TestBase, AssertsCompiledSQL):
@@ -962,7 +1059,7 @@ class TableValuedTest(fixtures.TestBase):
         connection.exec_driver_sql(
             r"""
 CREATE OR REPLACE FUNCTION scalar_strings (
-   count_in IN INTEGER)
+   count_in IN INTEGER, string_in IN VARCHAR2)
    RETURN strings_t
    AUTHID DEFINER
 IS
@@ -972,7 +1069,7 @@ BEGIN
 
    FOR indx IN 1 .. count_in
    LOOP
-      l_strings (indx) := 'some string';
+      l_strings (indx) := string_in;
    END LOOP;
 
    RETURN l_strings;
@@ -1022,7 +1119,8 @@ END;
     def test_scalar_strings_control(self, scalar_strings, connection):
         result = (
             connection.exec_driver_sql(
-                "SELECT COLUMN_VALUE my_string FROM TABLE (scalar_strings (5))"
+                "SELECT COLUMN_VALUE my_string FROM TABLE "
+                "(scalar_strings (5, 'some string'))"
             )
             .scalars()
             .all()
@@ -1033,7 +1131,7 @@ END;
         result = (
             connection.exec_driver_sql(
                 "SELECT COLUMN_VALUE anon_1 "
-                "FROM TABLE (scalar_strings (5)) anon_1"
+                "FROM TABLE (scalar_strings (5, 'some string')) anon_1"
             )
             .scalars()
             .all()
@@ -1041,7 +1139,7 @@ END;
         eq_(result, ["some string"] * 5)
 
     def test_scalar_strings(self, scalar_strings, connection):
-        fn = func.scalar_strings(5)
+        fn = func.scalar_strings(5, "some string")
         result = connection.execute(select(fn.column_valued())).scalars().all()
         eq_(result, ["some string"] * 5)
 
@@ -1055,6 +1153,15 @@ END;
         fn = func.three_pairs().table_valued("string1", "string2")
         result = connection.execute(select(fn.c.string1, fn.c.string2)).all()
         eq_(result, [("a", "b"), ("c", "d"), ("e", "f")])
+
+    def test_two_independent_tables(self, scalar_strings, connection):
+        fn1 = func.scalar_strings(5, "string one").column_valued()
+        fn2 = func.scalar_strings(3, "string two").column_valued()
+        result = connection.execute(select(fn1, fn2).where(fn1 != fn2)).all()
+        eq_(
+            result,
+            list(itertools.product(["string one"] * 5, ["string two"] * 3)),
+        )
 
 
 class OptimizedFetchLimitOffsetTest(test_select.FetchLimitOffsetTest):

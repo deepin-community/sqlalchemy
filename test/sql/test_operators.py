@@ -1,8 +1,10 @@
 import datetime
 import operator
+import pickle
 
 from sqlalchemy import and_
 from sqlalchemy import between
+from sqlalchemy import bindparam
 from sqlalchemy import exc
 from sqlalchemy import Integer
 from sqlalchemy import join
@@ -59,6 +61,7 @@ from sqlalchemy.testing import expect_warnings
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
 from sqlalchemy.testing import is_not
+from sqlalchemy.testing.assertions import expect_deprecated
 from sqlalchemy.types import ARRAY
 from sqlalchemy.types import Boolean
 from sqlalchemy.types import Concatenable
@@ -66,6 +69,7 @@ from sqlalchemy.types import DateTime
 from sqlalchemy.types import Indexable
 from sqlalchemy.types import JSON
 from sqlalchemy.types import MatchType
+from sqlalchemy.types import NullType
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.types import TypeEngine
 from sqlalchemy.types import UserDefinedType
@@ -76,7 +80,11 @@ class LoopOperate(operators.ColumnOperators):
         return op
 
 
-class DefaultColumnComparatorTest(fixtures.TestBase):
+class DefaultColumnComparatorTest(
+    testing.AssertsCompiledSQL, fixtures.TestBase
+):
+    dialect = "default_enhanced"
+
     @testing.combinations((operators.desc_op, desc), (operators.asc_op, asc))
     def test_scalar(self, operator, compare_to):
         left = column("left")
@@ -158,6 +166,32 @@ class DefaultColumnComparatorTest(fixtures.TestBase):
     def _loop_test(self, operator, *arg):
         loop = LoopOperate()
         is_(operator(loop, *arg), operator)
+
+    def test_null_true_false_is_sanity_checks(self):
+
+        d = default.DefaultDialect()
+        d.supports_native_boolean = True
+
+        self.assert_compile(
+            column("q") == None,
+            "q IS NULL",
+        )
+        self.assert_compile(
+            column("q") == null(),
+            "q IS NULL",
+        )
+        # IS coercion only occurs from left to right (just discovered this)
+        self.assert_compile(
+            null() == column("q"),
+            "NULL = q",
+        )
+        self.assert_compile(column("q") == true(), "q = true", dialect=d)
+        self.assert_compile(true() == column("q"), "true = q", dialect=d)
+        self.assert_compile(column("q") == True, "q = true", dialect=d)
+
+        # this comes out reversed; no choice, column.__eq__() is called
+        # and we don't get to know it's "reverse"
+        self.assert_compile(True == column("q"), "q = true", dialect=d)
 
     def test_no_getitem(self):
         assert_raises_message(
@@ -626,6 +660,8 @@ class ExtensionOperatorTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
     def test_contains(self):
         class MyType(UserDefinedType):
+            cache_ok = True
+
             class comparator_factory(UserDefinedType.Comparator):
                 def contains(self, other, **kw):
                     return self.op("->")(other)
@@ -634,6 +670,8 @@ class ExtensionOperatorTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
     def test_getitem(self):
         class MyType(UserDefinedType):
+            cache_ok = True
+
             class comparator_factory(UserDefinedType.Comparator):
                 def __getitem__(self, index):
                     return self.op("->")(index)
@@ -652,6 +690,8 @@ class ExtensionOperatorTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
     def test_lshift(self):
         class MyType(UserDefinedType):
+            cache_ok = True
+
             class comparator_factory(UserDefinedType.Comparator):
                 def __lshift__(self, other):
                     return self.op("->")(other)
@@ -660,6 +700,8 @@ class ExtensionOperatorTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
     def test_rshift(self):
         class MyType(UserDefinedType):
+            cache_ok = True
+
             class comparator_factory(UserDefinedType.Comparator):
                 def __rshift__(self, other):
                     return self.op("->")(other)
@@ -1182,15 +1224,14 @@ class ConjunctionTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         # these warning classes will change to ArgumentError when the
         # deprecated behavior is disabled
 
-        assert_raises_message(
-            exc.SADeprecationWarning,
+        with expect_deprecated(
             r"Invoking %(str_op)s\(\) without arguments is deprecated, and "
             r"will be disallowed in a future release.   For an empty "
             r"%(str_op)s\(\) construct, use "
             r"%(str_op)s\(%(str_continue)s, \*args\)\."
-            % {"str_op": str_op, "str_continue": str_continue},
-            op,
-        )
+            % {"str_op": str_op, "str_continue": str_continue}
+        ):
+            op()
 
     def test_empty_and_raw(self):
         self.assert_compile(
@@ -1385,14 +1426,14 @@ class OperatorPrecedenceTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         self.assert_compile(
             self.table2.select().where(5 + self.table2.c.field.in_([5, 6])),
             "SELECT op.field FROM op WHERE :param_1 + "
-            "(op.field IN ([POSTCOMPILE_field_1]))",
+            "(op.field IN (__[POSTCOMPILE_field_1]))",
         )
 
     def test_operator_precedence_6(self):
         self.assert_compile(
             self.table2.select().where((5 + self.table2.c.field).in_([5, 6])),
             "SELECT op.field FROM op WHERE :field_1 + op.field "
-            "IN ([POSTCOMPILE_param_1])",
+            "IN (__[POSTCOMPILE_param_1])",
         )
 
     def test_operator_precedence_7(self):
@@ -1736,28 +1777,28 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
     def test_in_1(self):
         self.assert_compile(
             self.table1.c.myid.in_(["a"]),
-            "mytable.myid IN ([POSTCOMPILE_myid_1])",
+            "mytable.myid IN (__[POSTCOMPILE_myid_1])",
             checkparams={"myid_1": ["a"]},
         )
 
     def test_in_2(self):
         self.assert_compile(
             ~self.table1.c.myid.in_(["a"]),
-            "(mytable.myid NOT IN ([POSTCOMPILE_myid_1]))",
+            "(mytable.myid NOT IN (__[POSTCOMPILE_myid_1]))",
             checkparams={"myid_1": ["a"]},
         )
 
     def test_in_3(self):
         self.assert_compile(
             self.table1.c.myid.in_(["a", "b"]),
-            "mytable.myid IN ([POSTCOMPILE_myid_1])",
+            "mytable.myid IN (__[POSTCOMPILE_myid_1])",
             checkparams={"myid_1": ["a", "b"]},
         )
 
     def test_in_4(self):
         self.assert_compile(
             self.table1.c.myid.in_(iter(["a", "b"])),
-            "mytable.myid IN ([POSTCOMPILE_myid_1])",
+            "mytable.myid IN (__[POSTCOMPILE_myid_1])",
             checkparams={"myid_1": ["a", "b"]},
         )
 
@@ -1852,7 +1893,7 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
     def test_in_19(self):
         self.assert_compile(
             self.table1.c.myid.in_([1, 2, 3]),
-            "mytable.myid IN ([POSTCOMPILE_myid_1])",
+            "mytable.myid IN (__[POSTCOMPILE_myid_1])",
             checkparams={"myid_1": [1, 2, 3]},
         )
 
@@ -1959,7 +2000,7 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         if is_in:
             self.assert_compile(
                 expr,
-                "(a, b, c) %s ([POSTCOMPILE_param_1])"
+                "(a, b, c) %s (__[POSTCOMPILE_param_1])"
                 % ("IN" if is_in else "NOT IN"),
                 checkparams={"param_1": [(3, "hi", b"there"), (4, "Q", b"P")]},
             )
@@ -1972,7 +2013,7 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         else:
             self.assert_compile(
                 expr,
-                "((a, b, c) NOT IN ([POSTCOMPILE_param_1]))",
+                "((a, b, c) NOT IN (__[POSTCOMPILE_param_1]))",
                 checkparams={"param_1": [(3, "hi", b"there"), (4, "Q", b"P")]},
             )
             self.assert_compile(
@@ -1999,7 +2040,7 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         if is_in:
             self.assert_compile(
                 expr,
-                "(a, b, c) IN ([POSTCOMPILE_param_1])",
+                "(a, b, c) IN (__[POSTCOMPILE_param_1])",
                 checkparams={"param_1": []},
             )
             self.assert_compile(
@@ -2011,7 +2052,7 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         else:
             self.assert_compile(
                 expr,
-                "((a, b, c) NOT IN ([POSTCOMPILE_param_1]))",
+                "((a, b, c) NOT IN (__[POSTCOMPILE_param_1]))",
                 checkparams={"param_1": []},
             )
             self.assert_compile(
@@ -2034,7 +2075,7 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         if is_in:
             self.assert_compile(
                 expr,
-                "a IN ([POSTCOMPILE_a_1])",
+                "a IN (__[POSTCOMPILE_a_1])",
                 checkparams={"a_1": []},
             )
             self.assert_compile(
@@ -2046,7 +2087,7 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         else:
             self.assert_compile(
                 expr,
-                "(a NOT IN ([POSTCOMPILE_a_1]))",
+                "(a NOT IN (__[POSTCOMPILE_a_1]))",
                 checkparams={"a_1": []},
             )
             self.assert_compile(
@@ -2064,7 +2105,8 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
         stmt = and_(expr1, expr2)
         self.assert_compile(
-            stmt, "a IN ([POSTCOMPILE_a_1]) AND (a NOT IN ([POSTCOMPILE_a_2]))"
+            stmt,
+            "a IN (__[POSTCOMPILE_a_1]) AND (a NOT IN (__[POSTCOMPILE_a_2]))",
         )
         self.assert_compile(
             stmt, "a IN (5) AND (a NOT IN (5))", literal_binds=True
@@ -2078,7 +2120,8 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
         stmt = and_(expr1, expr2)
         self.assert_compile(
-            stmt, "a IN ([POSTCOMPILE_a_1]) AND (a NOT IN ([POSTCOMPILE_a_2]))"
+            stmt,
+            "a IN (__[POSTCOMPILE_a_1]) AND (a NOT IN (__[POSTCOMPILE_a_2]))",
         )
         self.assert_compile(
             stmt,
@@ -2090,7 +2133,7 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         s = {1, 2, 3}
         self.assert_compile(
             self.table1.c.myid.in_(s),
-            "mytable.myid IN ([POSTCOMPILE_myid_1])",
+            "mytable.myid IN (__[POSTCOMPILE_myid_1])",
             checkparams={"myid_1": list(s)},
         )
 
@@ -2108,7 +2151,7 @@ class InTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         seq = MySeq([1, 2, 3])
         self.assert_compile(
             self.table1.c.myid.in_(seq),
-            "mytable.myid IN ([POSTCOMPILE_myid_1])",
+            "mytable.myid IN (__[POSTCOMPILE_myid_1])",
             checkparams={"myid_1": [1, 2, 3]},
         )
 
@@ -2208,6 +2251,22 @@ class ComparisonOperatorTest(fixtures.TestBase, testing.AssertsCompiledSQL):
     def test_pickle_operators_two(self):
         clause = tuple_(1, 2, 3)
         eq_(str(clause), str(util.pickle.loads(util.pickle.dumps(clause))))
+
+    @testing.combinations(Integer(), String(), JSON(), argnames="typ")
+    @testing.variation("eval_first", [True, False])
+    def test_pickle_comparator(self, typ, eval_first):
+        """test #10213"""
+
+        table1 = Table("t", MetaData(), Column("x", typ))
+        t1 = table1.c.x
+
+        if eval_first:
+            t1.comparator
+
+        t1p = pickle.loads(pickle.dumps(table1.c.x))
+
+        is_not(t1p.comparator.__class__, NullType.Comparator)
+        is_(t1.comparator.__class__, t1p.comparator.__class__)
 
     @testing.combinations(
         (operator.lt, "<", ">"),
@@ -2443,6 +2502,12 @@ class LikeTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         self.assert_compile(
             self.table1.c.myid.like("somstr", escape="\\"),
             "mytable.myid LIKE :myid_1 ESCAPE '\\'",
+        )
+
+    def test_like_quote_escape(self):
+        self.assert_compile(
+            self.table1.c.myid.like("somstr", escape="'"),
+            "mytable.myid LIKE :myid_1 ESCAPE ''''",
         )
 
     def test_like_4(self):
@@ -2800,6 +2865,36 @@ class ComposedLikeOperatorsTest(fixtures.TestBase, testing.AssertsCompiledSQL):
             checkparams={"x_1": "y"},
         )
 
+    def test_contains_encoded(self):
+        self.assert_compile(
+            column("x").contains(b"y"),
+            "x LIKE '%' || :x_1 || '%'",
+            checkparams={"x_1": b"y"},
+        )
+
+    def test_not_contains_encoded(self):
+        self.assert_compile(
+            ~column("x").contains(b"y"),
+            "x NOT LIKE '%' || :x_1 || '%'",
+            checkparams={"x_1": b"y"},
+        )
+
+    def test_contains_encoded_mysql(self):
+        self.assert_compile(
+            column("x").contains(b"y"),
+            "x LIKE concat(concat('%%', %s), '%%')",
+            checkparams={"x_1": b"y"},
+            dialect="mysql",
+        )
+
+    def test_not_contains_encoded_mysql(self):
+        self.assert_compile(
+            ~column("x").contains(b"y"),
+            "x NOT LIKE concat(concat('%%', %s), '%%')",
+            checkparams={"x_1": b"y"},
+            dialect="mysql",
+        )
+
     def test_contains_escape(self):
         self.assert_compile(
             column("x").contains("a%b_c", escape="\\"),
@@ -2963,6 +3058,36 @@ class ComposedLikeOperatorsTest(fixtures.TestBase, testing.AssertsCompiledSQL):
             checkparams={"x_1": "a^%b^_c/d^^e"},
         )
 
+    def test_startswith_encoded(self):
+        self.assert_compile(
+            column("x").startswith(b"y"),
+            "x LIKE :x_1 || '%'",
+            checkparams={"x_1": b"y"},
+        )
+
+    def test_startswith_encoded_mysql(self):
+        self.assert_compile(
+            column("x").startswith(b"y"),
+            "x LIKE concat(%s, '%%')",
+            checkparams={"x_1": b"y"},
+            dialect="mysql",
+        )
+
+    def test_not_startswith_encoded(self):
+        self.assert_compile(
+            ~column("x").startswith(b"y"),
+            "x NOT LIKE :x_1 || '%'",
+            checkparams={"x_1": b"y"},
+        )
+
+    def test_not_startswith_encoded_mysql(self):
+        self.assert_compile(
+            ~column("x").startswith(b"y"),
+            "x NOT LIKE concat(%s, '%%')",
+            checkparams={"x_1": b"y"},
+            dialect="mysql",
+        )
+
     def test_not_startswith(self):
         self.assert_compile(
             ~column("x").startswith("y"),
@@ -3051,6 +3176,28 @@ class ComposedLikeOperatorsTest(fixtures.TestBase, testing.AssertsCompiledSQL):
             column("x").endswith("y"),
             "x LIKE '%' || :x_1",
             checkparams={"x_1": "y"},
+        )
+
+    def test_endswith_encoded(self):
+        self.assert_compile(
+            column("x").endswith(b"y"),
+            "x LIKE '%' || :x_1",
+            checkparams={"x_1": b"y"},
+        )
+
+    def test_endswith_encoded_mysql(self):
+        self.assert_compile(
+            column("x").endswith(b"y"),
+            "x LIKE concat('%%', %s)",
+            checkparams={"x_1": b"y"},
+            dialect="mysql",
+        )
+
+    def test_not_endswith_encoded(self):
+        self.assert_compile(
+            ~column("x").endswith(b"y"),
+            "x NOT LIKE '%' || :x_1",
+            checkparams={"x_1": b"y"},
         )
 
     def test_endswith_escape(self):
@@ -3392,6 +3539,24 @@ class AnyAllTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         )
         return t
 
+    @testing.combinations(
+        lambda col: any_(col) == None,
+        lambda col: col.any_() == None,
+        lambda col: any_(col) == null(),
+        lambda col: col.any_() == null(),
+        lambda col: null() == any_(col),
+        lambda col: null() == col.any_(),
+        lambda col: None == any_(col),
+        lambda col: None == col.any_(),
+        argnames="expr",
+    )
+    @testing.combinations("int", "array", argnames="datatype")
+    def test_any_generic_null(self, datatype, expr, t_fixture):
+
+        col = t_fixture.c.data if datatype == "int" else t_fixture.c.arrval
+
+        self.assert_compile(expr(col), "NULL = ANY (tab1.%s)" % col.name)
+
     def test_any_array(self, t_fixture):
         t = t_fixture
 
@@ -3481,13 +3646,31 @@ class AnyAllTest(fixtures.TestBase, testing.AssertsCompiledSQL):
             t.c.data + all_(t.c.arrval), "tab1.data + ALL (tab1.arrval)"
         )
 
+    @testing.combinations("all", "any", argnames="op")
+    def test_any_all_bindparam_coercion(self, t_fixture, op):
+        """test #7979"""
+        t = t_fixture
+
+        if op == "all":
+            expr = t.c.arrval.all(bindparam("param"))
+            expected = "%(param)s = ALL (tab1.arrval)"
+        elif op == "any":
+            expr = t.c.arrval.any(bindparam("param"))
+            expected = "%(param)s = ANY (tab1.arrval)"
+        else:
+            assert False
+
+        is_(expr.left.type._type_affinity, Integer)
+
+        self.assert_compile(expr, expected, dialect="postgresql")
+
     def test_any_array_comparator_accessor(self, t_fixture):
         t = t_fixture
 
         self.assert_compile(
             t.c.arrval.any(5, operator.gt),
-            ":param_1 > ANY (tab1.arrval)",
-            checkparams={"param_1": 5},
+            ":arrval_1 > ANY (tab1.arrval)",
+            checkparams={"arrval_1": 5},
         )
 
     def test_any_array_comparator_negate_accessor(self, t_fixture):
@@ -3495,8 +3678,8 @@ class AnyAllTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
         self.assert_compile(
             ~t.c.arrval.any(5, operator.gt),
-            "NOT (:param_1 > ANY (tab1.arrval))",
-            checkparams={"param_1": 5},
+            "NOT (:arrval_1 > ANY (tab1.arrval))",
+            checkparams={"arrval_1": 5},
         )
 
     def test_all_array_comparator_accessor(self, t_fixture):
@@ -3504,8 +3687,8 @@ class AnyAllTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
         self.assert_compile(
             t.c.arrval.all(5, operator.gt),
-            ":param_1 > ALL (tab1.arrval)",
-            checkparams={"param_1": 5},
+            ":arrval_1 > ALL (tab1.arrval)",
+            checkparams={"arrval_1": 5},
         )
 
     def test_all_array_comparator_negate_accessor(self, t_fixture):
@@ -3513,8 +3696,8 @@ class AnyAllTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
         self.assert_compile(
             ~t.c.arrval.all(5, operator.gt),
-            "NOT (:param_1 > ALL (tab1.arrval))",
-            checkparams={"param_1": 5},
+            "NOT (:arrval_1 > ALL (tab1.arrval))",
+            checkparams={"arrval_1": 5},
         )
 
     def test_any_array_expression(self, t_fixture):

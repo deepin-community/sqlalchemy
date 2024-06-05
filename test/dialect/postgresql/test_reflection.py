@@ -34,10 +34,13 @@ from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import mock
 from sqlalchemy.testing.assertions import assert_raises
+from sqlalchemy.testing.assertions import assert_warns
 from sqlalchemy.testing.assertions import AssertsExecutionResults
 from sqlalchemy.testing.assertions import eq_
+from sqlalchemy.testing.assertions import expect_warnings
 from sqlalchemy.testing.assertions import is_
 from sqlalchemy.testing.assertions import is_true
+from sqlalchemy.types import NullType
 
 
 class ReflectionFixtures(object):
@@ -183,6 +186,7 @@ class PartitionedReflectionTest(fixtures.TablesTest, AssertsExecutionResults):
                     "unique": False,
                     "column_names": ["q"],
                     "include_columns": [],
+                    "dialect_options": {"postgresql_include": []},
                 }
             ],
         )
@@ -198,6 +202,7 @@ class PartitionedReflectionTest(fixtures.TablesTest, AssertsExecutionResults):
                 {
                     "column_names": ["q"],
                     "include_columns": [],
+                    "dialect_options": {"postgresql_include": []},
                     "name": mock.ANY,
                     "unique": False,
                 }
@@ -298,13 +303,18 @@ class MaterializedViewReflectionTest(
 
     def test_get_view_definition(self, connection):
         insp = inspect(connection)
+
+        def normalize(definition):
+            # pg16 returns "SELECT" without qualifying tablename.
+            # older pgs include it
+            definition = re.sub(
+                r"testtable\.(\w+)", lambda m: m.group(1), definition
+            )
+            return re.sub(r"[\n\t ]+", " ", definition.strip())
+
         eq_(
-            re.sub(
-                r"[\n\t ]+",
-                " ",
-                insp.get_view_definition("test_mview").strip(),
-            ),
-            "SELECT testtable.id, testtable.data FROM testtable;",
+            normalize(insp.get_view_definition("test_mview")),
+            "SELECT id, data FROM testtable;",
         )
 
 
@@ -484,7 +494,7 @@ class DomainReflectionTest(fixtures.TestBase, AssertsExecutionResults):
         base.PGDialect.ischema_names = {}
         try:
             m2 = MetaData()
-            assert_raises(
+            assert_warns(
                 exc.SAWarning, Table, "testtable", m2, autoload_with=connection
             )
 
@@ -997,7 +1007,7 @@ class ReflectionTest(
         )
 
     def test_index_reflection_partial(self, metadata, connection):
-        """Reflect the filter defintion on partial indexes"""
+        """Reflect the filter definition on partial indexes"""
 
         metadata = metadata
 
@@ -1088,7 +1098,7 @@ class ReflectionTest(
 
         # "ASC NULLS LAST" is implicit default for indexes,
         # and "NULLS FIRST" is implicit default for "DESC".
-        # (https://www.postgresql.org/docs/11/indexes-ordering.html)
+        # (https://www.postgresql.org/docs/current/indexes-ordering.html)
 
         def compile_exprs(exprs):
             return list(map(str, exprs))
@@ -1131,6 +1141,7 @@ class ReflectionTest(
         expected = [{"name": "idx1", "unique": False, "column_names": ["y"]}]
         if testing.requires.index_reflects_included_columns.enabled:
             expected[0]["include_columns"] = []
+            expected[0]["dialect_options"] = {"postgresql_include": []}
 
         eq_(ind, expected)
 
@@ -1163,6 +1174,7 @@ class ReflectionTest(
         ]
         if testing.requires.index_reflects_included_columns.enabled:
             expected[0]["include_columns"] = []
+            expected[0]["dialect_options"]["postgresql_include"] = []
         eq_(ind, expected)
 
         m = MetaData()
@@ -1195,6 +1207,7 @@ class ReflectionTest(
         ]
         if testing.requires.index_reflects_included_columns.enabled:
             expected[0]["include_columns"] = []
+            expected[0]["dialect_options"]["postgresql_include"] = []
         eq_(ind, expected)
         m = MetaData()
         t1 = Table("t", m, autoload_with=connection)
@@ -1229,6 +1242,7 @@ class ReflectionTest(
                     "unique": False,
                     "column_names": ["x"],
                     "include_columns": ["name"],
+                    "dialect_options": {"postgresql_include": ["name"]},
                     "name": "idx1",
                 }
             ],
@@ -1604,6 +1618,7 @@ class ReflectionTest(
         ]
         if testing.requires.index_reflects_included_columns.enabled:
             expected[0]["include_columns"] = []
+            expected[0]["dialect_options"]["postgresql_include"] = []
 
         eq_(insp.get_indexes("t"), expected)
 
@@ -1813,6 +1828,21 @@ class CustomTypeReflectionTest(fixtures.TestBase):
         dialect.ischema_names = dialect.ischema_names.copy()
         dialect.ischema_names["my_custom_type"] = self.CustomType
         self._assert_reflected(dialect)
+
+    def test_no_format_type(self):
+        """test #8748"""
+
+        dialect = postgresql.PGDialect()
+        dialect.ischema_names = dialect.ischema_names.copy()
+        dialect.ischema_names["my_custom_type"] = self.CustomType
+
+        with expect_warnings(
+            r"PostgreSQL format_type\(\) returned NULL for column 'colname'"
+        ):
+            column_info = dialect._get_column_info(
+                "colname", None, None, False, {}, {}, "public", None, "", None
+            )
+            assert isinstance(column_info["type"], NullType)
 
 
 class IntervalReflectionTest(fixtures.TestBase):

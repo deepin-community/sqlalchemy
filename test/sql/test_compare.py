@@ -13,9 +13,11 @@ from sqlalchemy import exists
 from sqlalchemy import extract
 from sqlalchemy import Float
 from sqlalchemy import Integer
+from sqlalchemy import literal
 from sqlalchemy import literal_column
 from sqlalchemy import MetaData
 from sqlalchemy import or_
+from sqlalchemy import PickleType
 from sqlalchemy import select
 from sqlalchemy import String
 from sqlalchemy import Table
@@ -67,6 +69,7 @@ from sqlalchemy.sql.selectable import LABEL_STYLE_TABLENAME_PLUS_COL
 from sqlalchemy.sql.selectable import Select
 from sqlalchemy.sql.selectable import Selectable
 from sqlalchemy.sql.selectable import SelectStatementGrouping
+from sqlalchemy.sql.type_api import UserDefinedType
 from sqlalchemy.sql.visitors import InternalTraversal
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
@@ -203,10 +206,22 @@ class CoreFixtures(object):
             ),
         ),
         lambda: (
+            literal(1).op("+")(literal(1)),
+            literal(1).op("-")(literal(1)),
+            column("q").op("-")(literal(1)),
+            UnaryExpression(table_a.c.b, modifier=operators.neg),
+            UnaryExpression(table_a.c.b, modifier=operators.desc_op),
+            UnaryExpression(table_a.c.b, modifier=operators.custom_op("!")),
+            UnaryExpression(table_a.c.b, modifier=operators.custom_op("~")),
+        ),
+        lambda: (
             column("q") == column("x"),
             column("q") == column("y"),
             column("z") == column("x"),
             column("z") + column("x"),
+            column("z").op("foo")(column("x")),
+            column("z").op("foo")(literal(1)),
+            column("z").op("bar")(column("x")),
             column("z") - column("x"),
             column("x") - column("z"),
             column("z") > column("x"),
@@ -221,6 +236,14 @@ class CoreFixtures(object):
             column("q").like("somstr"),
             column("q").like("somstr", escape="\\"),
             column("q").like("somstr", escape="X"),
+        ),
+        lambda: (
+            column("q").regexp_match("y", flags="ig"),
+            column("q").regexp_match("y", flags="q"),
+            column("q").regexp_match("y"),
+            column("q").regexp_replace("y", "z", flags="ig"),
+            column("q").regexp_replace("y", "z", flags="q"),
+            column("q").regexp_replace("y", "z"),
         ),
         lambda: (
             column("q", ARRAY(Integer))[3] == 5,
@@ -264,6 +287,8 @@ class CoreFixtures(object):
         ),
         lambda: (
             table("a", column("x"), column("y")),
+            table("a", column("x"), column("y"), schema="q"),
+            table("a", column("x"), column("y"), schema="y"),
             table("a", column("x"), column("y"))._annotate({"orm": True}),
             table("b", column("x"), column("y"))._annotate({"orm": True}),
         ),
@@ -283,6 +308,7 @@ class CoreFixtures(object):
         ),
         lambda: (
             bindparam("x"),
+            bindparam("x", literal_execute=True),
             bindparam("y"),
             bindparam("x", type_=Integer),
             bindparam("x", type_=String),
@@ -502,6 +528,7 @@ class CoreFixtures(object):
         ),
         lambda: (
             select(table_a.c.a).cte(),
+            select(table_a.c.a).cte(nesting=True),
             select(table_a.c.a).cte(recursive=True),
             select(table_a.c.a).cte(name="some_cte", recursive=True),
             select(table_a.c.a).cte(name="some_cte"),
@@ -830,7 +857,17 @@ class CoreFixtures(object):
             )
             return stmt
 
-        return [one(), one_diff(), two(), three()]
+        def four():
+            stmt = select(table_a.c.a).cte(recursive=True)
+            stmt = stmt.union(select(stmt.c.a + 1).where(stmt.c.a < 10))
+            return stmt
+
+        def five():
+            stmt = select(table_a.c.a).cte(recursive=True, nesting=True)
+            stmt = stmt.union(select(stmt.c.a + 1).where(stmt.c.a < 10))
+            return stmt
+
+        return [one(), one_diff(), two(), three(), four(), five()]
 
     fixtures.append(_complex_fixtures)
 
@@ -860,7 +897,7 @@ class CoreFixtures(object):
             subq = select(l).subquery()
 
             # this creates a ColumnClause as a proxy to the Label() that has
-            # an anoymous name, so the column has one too.
+            # an anonymous name, so the column has one too.
             anon_col = subq.c[0]
 
             # then when BindParameter is created, it checks the label
@@ -876,7 +913,7 @@ class CoreFixtures(object):
             subq = select(l).subquery()
 
             # this creates a ColumnClause as a proxy to the Label() that has
-            # an anoymous name, so the column has one too.
+            # an anonymous name, so the column has one too.
             anon_col = subq.c[0]
 
             # then when BindParameter is created, it checks the label
@@ -1037,110 +1074,7 @@ class CoreFixtures(object):
     ]
 
 
-class CacheKeyFixture(object):
-    def _compare_equal(self, a, b, compare_values):
-        a_key = a._generate_cache_key()
-        b_key = b._generate_cache_key()
-
-        if a_key is None:
-            assert a._annotations.get("nocache")
-
-            assert b_key is None
-        else:
-
-            eq_(a_key.key, b_key.key)
-            eq_(hash(a_key.key), hash(b_key.key))
-
-            for a_param, b_param in zip(a_key.bindparams, b_key.bindparams):
-                assert a_param.compare(b_param, compare_values=compare_values)
-        return a_key, b_key
-
-    def _run_cache_key_fixture(self, fixture, compare_values):
-        case_a = fixture()
-        case_b = fixture()
-
-        for a, b in itertools.combinations_with_replacement(
-            range(len(case_a)), 2
-        ):
-            if a == b:
-                a_key, b_key = self._compare_equal(
-                    case_a[a], case_b[b], compare_values
-                )
-                if a_key is None:
-                    continue
-            else:
-                a_key = case_a[a]._generate_cache_key()
-                b_key = case_b[b]._generate_cache_key()
-
-                if a_key is None or b_key is None:
-                    if a_key is None:
-                        assert case_a[a]._annotations.get("nocache")
-                    if b_key is None:
-                        assert case_b[b]._annotations.get("nocache")
-                    continue
-
-                if a_key.key == b_key.key:
-                    for a_param, b_param in zip(
-                        a_key.bindparams, b_key.bindparams
-                    ):
-                        if not a_param.compare(
-                            b_param, compare_values=compare_values
-                        ):
-                            break
-                    else:
-                        # this fails unconditionally since we could not
-                        # find bound parameter values that differed.
-                        # Usually we intended to get two distinct keys here
-                        # so the failure will be more descriptive using the
-                        # ne_() assertion.
-                        ne_(a_key.key, b_key.key)
-                else:
-                    ne_(a_key.key, b_key.key)
-
-            # ClauseElement-specific test to ensure the cache key
-            # collected all the bound parameters that aren't marked
-            # as "literal execute"
-            if isinstance(case_a[a], ClauseElement) and isinstance(
-                case_b[b], ClauseElement
-            ):
-                assert_a_params = []
-                assert_b_params = []
-
-                for elem in visitors.iterate(case_a[a]):
-                    if elem.__visit_name__ == "bindparam":
-                        assert_a_params.append(elem)
-
-                for elem in visitors.iterate(case_b[b]):
-                    if elem.__visit_name__ == "bindparam":
-                        assert_b_params.append(elem)
-
-                # note we're asserting the order of the params as well as
-                # if there are dupes or not.  ordering has to be
-                # deterministic and matches what a traversal would provide.
-                eq_(
-                    sorted(a_key.bindparams, key=lambda b: b.key),
-                    sorted(
-                        util.unique_list(assert_a_params), key=lambda b: b.key
-                    ),
-                )
-                eq_(
-                    sorted(b_key.bindparams, key=lambda b: b.key),
-                    sorted(
-                        util.unique_list(assert_b_params), key=lambda b: b.key
-                    ),
-                )
-
-    def _run_cache_key_equal_fixture(self, fixture, compare_values):
-        case_a = fixture()
-        case_b = fixture()
-
-        for a, b in itertools.combinations_with_replacement(
-            range(len(case_a)), 2
-        ):
-            self._compare_equal(case_a[a], case_b[b], compare_values)
-
-
-class CacheKeyTest(CacheKeyFixture, CoreFixtures, fixtures.TestBase):
+class CacheKeyTest(fixtures.CacheKeyFixture, CoreFixtures, fixtures.TestBase):
     # we are slightly breaking the policy of not having external dialect
     # stuff in here, but use pg/mysql as test cases to ensure that these
     # objects don't report an inaccurate cache key, which is dependent
@@ -1181,6 +1115,27 @@ class CacheKeyTest(CacheKeyFixture, CoreFixtures, fixtures.TestBase):
         ).data([(i, "data %s" % i, i * 5) for i in range(500)])
 
         is_(large_v1._generate_cache_key(), None)
+
+    @testing.combinations(
+        (lambda: column("x"), lambda: column("x"), lambda: column("y")),
+        (
+            lambda: func.foo_bar(1, 2, 3),
+            lambda: func.foo_bar(4, 5, 6),
+            lambda: func.foo_bar_bat(1, 2, 3),
+        ),
+    )
+    def test_cache_key_object_comparators(self, lc1, lc2, lc3):
+        """test ne issue detected as part of #10042"""
+        c1 = lc1()
+        c2 = lc2()
+        c3 = lc3()
+
+        eq_(c1._generate_cache_key(), c2._generate_cache_key())
+        ne_(c1._generate_cache_key(), c3._generate_cache_key())
+        is_true(c1._generate_cache_key() == c2._generate_cache_key())
+        is_false(c1._generate_cache_key() != c2._generate_cache_key())
+        is_true(c1._generate_cache_key() != c3._generate_cache_key())
+        is_false(c1._generate_cache_key() == c3._generate_cache_key())
 
     def test_cache_key(self):
         for fixtures_, compare_values in [
@@ -1253,13 +1208,20 @@ class CacheKeyTest(CacheKeyFixture, CoreFixtures, fixtures.TestBase):
         # the None for cache key will prevent objects
         # which contain these elements from being cached.
         f1 = Foobar1()
-        eq_(f1._generate_cache_key(), None)
+        with expect_warnings(
+            "Class Foobar1 will not make use of SQL compilation caching"
+        ):
+            eq_(f1._generate_cache_key(), None)
 
         f2 = Foobar2()
-        eq_(f2._generate_cache_key(), None)
+        with expect_warnings(
+            "Class Foobar2 will not make use of SQL compilation caching"
+        ):
+            eq_(f2._generate_cache_key(), None)
 
         s1 = select(column("q"), Foobar2())
 
+        # warning is memoized, won't happen the second time
         eq_(s1._generate_cache_key(), None)
 
     def test_get_children_no_method(self):
@@ -1337,6 +1299,10 @@ class CompareAndCopyTest(CoreFixtures, fixtures.TestBase):
         ]
 
     def test_all_present(self):
+        """test for elements that are in SQLAlchemy Core, that they are
+        also included in the fixtures above.
+
+        """
         need = set(
             cls
             for cls in class_hierarchy(ClauseElement)
@@ -1346,6 +1312,7 @@ class CompareAndCopyTest(CoreFixtures, fixtures.TestBase):
                 or issubclass(cls, AliasedReturnsRows)
             )
             and not issubclass(cls, (Annotated))
+            and cls.__module__.startswith("sqlalchemy.")
             and "orm" not in cls.__module__
             and "compiler" not in cls.__module__
             and "crud" not in cls.__module__
@@ -1623,6 +1590,7 @@ class CompareClausesTest(fixtures.TestBase):
 
     def test_compare_binds(self):
         b1 = bindparam("foo", type_=Integer())
+        b1l = bindparam("foo", type_=Integer(), literal_execute=True)
         b2 = bindparam("foo", type_=Integer())
         b3 = bindparam("foo", type_=String())
 
@@ -1633,6 +1601,9 @@ class CompareClausesTest(fixtures.TestBase):
             return 6
 
         b4 = bindparam("foo", type_=Integer(), callable_=c1)
+        b4l = bindparam(
+            "foo", type_=Integer(), callable_=c1, literal_execute=True
+        )
         b5 = bindparam("foo", type_=Integer(), callable_=c2)
         b6 = bindparam("foo", type_=Integer(), callable_=c1)
 
@@ -1652,6 +1623,22 @@ class CompareClausesTest(fixtures.TestBase):
         is_false(b1.compare(b7))
         is_false(b7.compare(b8))
         is_true(b7.compare(b7))
+
+        # cache key
+        def compare_key(left, right, expected):
+            lk = left._generate_cache_key().key
+            rk = right._generate_cache_key().key
+            is_(lk == rk, expected)
+
+        compare_key(b1, b4, True)
+        compare_key(b1, b5, True)
+        compare_key(b8, b5, True)
+        compare_key(b8, b7, True)
+        compare_key(b8, b3, False)
+        compare_key(b1, b1l, False)
+        compare_key(b1, b4l, False)
+        compare_key(b4, b4l, False)
+        compare_key(b7, b4l, False)
 
     def test_compare_tables(self):
         is_true(table_a.compare(table_a_2))
@@ -1733,19 +1720,21 @@ class ExecutableFlagsTest(fixtures.TestBase):
 
 
 class TypesTest(fixtures.TestBase):
-    def test_typedec_no_cache(self):
-        class MyType(TypeDecorator):
+    @testing.combinations(TypeDecorator, UserDefinedType)
+    def test_thirdparty_no_cache(self, base):
+        class MyType(base):
             impl = String
 
         expr = column("q", MyType()) == 1
 
         with expect_warnings(
-            r"TypeDecorator MyType\(\) will not produce a cache key"
+            r"%s MyType\(\) will not produce a cache key" % base.__name__
         ):
             is_(expr._generate_cache_key(), None)
 
-    def test_typedec_cache_false(self):
-        class MyType(TypeDecorator):
+    @testing.combinations(TypeDecorator, UserDefinedType)
+    def test_thirdparty_cache_false(self, base):
+        class MyType(base):
             impl = String
 
             cache_ok = False
@@ -1754,8 +1743,9 @@ class TypesTest(fixtures.TestBase):
 
         is_(expr._generate_cache_key(), None)
 
-    def test_typedec_cache_ok(self):
-        class MyType(TypeDecorator):
+    @testing.combinations(TypeDecorator, UserDefinedType)
+    def test_thirdparty_cache_ok(self, base):
+        class MyType(base):
             impl = String
 
             cache_ok = True
@@ -1805,3 +1795,69 @@ class TypesTest(fixtures.TestBase):
         eq_(c1, c2)
         ne_(c1, c3)
         eq_(c1, c4)
+
+    def test_thirdparty_sub_subclass_no_cache(self):
+        class MyType(PickleType):
+            pass
+
+        expr = column("q", MyType()) == 1
+
+        with expect_warnings(
+            r"TypeDecorator MyType\(\) will not produce a cache key"
+        ):
+            is_(expr._generate_cache_key(), None)
+
+    def test_userdefined_sub_subclass_no_cache(self):
+        class MyType(UserDefinedType):
+            cache_ok = True
+
+        class MySubType(MyType):
+            pass
+
+        expr = column("q", MySubType()) == 1
+
+        with expect_warnings(
+            r"UserDefinedType MySubType\(\) will not produce a cache key"
+        ):
+            is_(expr._generate_cache_key(), None)
+
+    def test_userdefined_sub_subclass_cache_ok(self):
+        class MyType(UserDefinedType):
+            cache_ok = True
+
+        class MySubType(MyType):
+            cache_ok = True
+
+        def go1():
+            expr = column("q", MySubType()) == 1
+            return expr
+
+        def go2():
+            expr = column("p", MySubType()) == 1
+            return expr
+
+        c1 = go1()._generate_cache_key()[0]
+        c2 = go1()._generate_cache_key()[0]
+        c3 = go2()._generate_cache_key()[0]
+
+        eq_(c1, c2)
+        ne_(c1, c3)
+
+    def test_thirdparty_sub_subclass_cache_ok(self):
+        class MyType(PickleType):
+            cache_ok = True
+
+        def go1():
+            expr = column("q", MyType()) == 1
+            return expr
+
+        def go2():
+            expr = column("p", MyType()) == 1
+            return expr
+
+        c1 = go1()._generate_cache_key()[0]
+        c2 = go1()._generate_cache_key()[0]
+        c3 = go2()._generate_cache_key()[0]
+
+        eq_(c1, c2)
+        ne_(c1, c3)

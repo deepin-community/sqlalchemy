@@ -84,13 +84,21 @@ class SequenceDDLTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         )
 
         self.assert_compile(
-            CreateSequence(Sequence("foo_seq", cache=1000, order=True)),
-            "CREATE SEQUENCE foo_seq START WITH 1 CACHE 1000 ORDER",
+            CreateSequence(Sequence("foo_seq", cache=1000)),
+            "CREATE SEQUENCE foo_seq START WITH 1 CACHE 1000",
         )
 
+        # remove this when the `order` parameter is removed
+        # issue #10207 - ensure ORDER does not render
+        self.assert_compile(
+            CreateSequence(Sequence("foo_seq", order=True)),
+            "CREATE SEQUENCE foo_seq START WITH 1",
+        )
+        # only renders for Oracle
         self.assert_compile(
             CreateSequence(Sequence("foo_seq", order=True)),
             "CREATE SEQUENCE foo_seq START WITH 1 ORDER",
+            dialect="oracle",
         )
 
         self.assert_compile(
@@ -208,6 +216,8 @@ class SequenceExecTest(fixtures.TestBase):
         ("implicit_returning",),
         ("no_implicit_returning",),
         ("explicit_returning", testing.requires.returning),
+        ("return_defaults_no_implicit_returning", testing.requires.returning),
+        ("return_defaults_implicit_returning", testing.requires.returning),
         argnames="returning",
     )
     @testing.requires.multivalues_inserts
@@ -221,7 +231,7 @@ class SequenceExecTest(fixtures.TestBase):
 
         e = engines.testing_engine(
             options={
-                "implicit_returning": returning != "no_implicit_returning"
+                "implicit_returning": "no_implicit_returning" not in returning
             }
         )
         metadata.create_all(e)
@@ -232,10 +242,79 @@ class SequenceExecTest(fixtures.TestBase):
             )
             if returning == "explicit_returning":
                 stmt = stmt.returning(t1.c.x)
+            elif "return_defaults" in returning:
+                stmt = stmt.return_defaults()
 
             r = conn.execute(stmt)
             if returning == "explicit_returning":
                 eq_(r.all(), [(1,), (2,), (3,)])
+            elif "return_defaults" in returning:
+                eq_(r.returned_defaults_rows, None)
+
+                # TODO: not sure what this is
+                eq_(r.inserted_primary_key_rows, [(None,)])
+
+            eq_(
+                conn.execute(t1.select().order_by(t1.c.x)).all(),
+                [(1, "d1"), (2, "d2"), (3, "d3")],
+            )
+
+    @testing.combinations(
+        ("implicit_returning",),
+        ("no_implicit_returning",),
+        (
+            "explicit_returning",
+            testing.requires.returning
+            + testing.requires.insert_executemany_returning,
+        ),
+        (
+            "return_defaults_no_implicit_returning",
+            testing.requires.returning
+            + testing.requires.insert_executemany_returning,
+        ),
+        (
+            "return_defaults_implicit_returning",
+            testing.requires.returning
+            + testing.requires.insert_executemany_returning,
+        ),
+        argnames="returning",
+    )
+    def test_seq_multivalues_executemany(
+        self, metadata, testing_engine, returning
+    ):
+        t1 = Table(
+            "t",
+            metadata,
+            Column("x", Integer, Sequence("my_seq"), primary_key=True),
+            Column("data", String(50)),
+        )
+
+        e = engines.testing_engine(
+            options={
+                "implicit_returning": "no_implicit_returning" not in returning
+            }
+        )
+        metadata.create_all(e)
+        with e.begin() as conn:
+
+            stmt = t1.insert()
+            if returning == "explicit_returning":
+                stmt = stmt.returning(t1.c.x)
+            elif "return_defaults" in returning:
+                stmt = stmt.return_defaults()
+
+            r = conn.execute(
+                stmt, [{"data": "d1"}, {"data": "d2"}, {"data": "d3"}]
+            )
+            if returning == "explicit_returning":
+                eq_(r.all(), [(1,), (2,), (3,)])
+            elif "return_defaults" in returning:
+                if "no_implicit_returning" in returning:
+                    eq_(r.returned_defaults_rows, None)
+                    eq_(r.inserted_primary_key_rows, [(1,), (2,), (3,)])
+                else:
+                    eq_(r.returned_defaults_rows, [(1,), (2,), (3,)])
+                    eq_(r.inserted_primary_key_rows, [(1,), (2,), (3,)])
 
             eq_(
                 conn.execute(t1.select().order_by(t1.c.x)).all(),

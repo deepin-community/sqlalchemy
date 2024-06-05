@@ -540,9 +540,7 @@
       to work for subclasses, if they are present, for
       example::
 
-        sess.query(Company).options(
-         eagerload_all(
-        ))
+        sess.query(Company).options(eagerload_all())
 
       to load Company objects, their employees, and the
       'machines' collection of employees who happen to be
@@ -3742,7 +3740,7 @@
         :tickets: 
 
       New scoped_session() function replaces SessionContext and assignmapper.
-      Builds onto "sessionmaker()" concept to produce a class whos Session()
+      Builds onto "sessionmaker()" concept to produce a class whose Session()
       construction returns the thread-local session.  Or, call all Session
       methods as class methods, i.e. Session.save(foo); Session.commit().
       just like the old "objectstore" days.

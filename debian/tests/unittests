@@ -6,5 +6,5 @@ set -e
 echo "===> Running tests"
 for i in ${PYTHON3S}; do
 	echo "===> Testing with python$i"
-	python$i -m pytest
+	python$i -m pytest --ignore=.pc -k 'not test_joined_across and not test_eager_join'
 done

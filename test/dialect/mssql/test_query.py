@@ -1,4 +1,6 @@
 # -*- encoding: utf-8
+import decimal
+
 from sqlalchemy import and_
 from sqlalchemy import Column
 from sqlalchemy import DDL
@@ -9,6 +11,7 @@ from sqlalchemy import func
 from sqlalchemy import Identity
 from sqlalchemy import Integer
 from sqlalchemy import literal
+from sqlalchemy import Numeric
 from sqlalchemy import or_
 from sqlalchemy import PrimaryKeyConstraint
 from sqlalchemy import select
@@ -41,6 +44,13 @@ class IdentityInsertTest(fixtures.TablesTest, AssertsCompiledSQL):
             Column("description", String(50)),
             PrimaryKeyConstraint("id", name="PK_cattable"),
         )
+        Table(
+            "numeric_identity",
+            metadata,
+            Column("id", Numeric(18, 0), autoincrement=True),
+            Column("description", String(50)),
+            PrimaryKeyConstraint("id", name="PK_numeric_identity"),
+        )
 
     def test_compiled(self):
         cattable = self.tables.cattable
@@ -62,6 +72,13 @@ class IdentityInsertTest(fixtures.TablesTest, AssertsCompiledSQL):
         eq_(result.inserted_primary_key, (10,))
         lastcat = conn.execute(cattable.select().order_by(desc(cattable.c.id)))
         eq_((10, "PHP"), lastcat.first())
+
+        numeric_identity = self.tables.numeric_identity
+        # for some reason, T-SQL does not like .values(), but this works
+        result = conn.execute(
+            numeric_identity.insert(), dict(description="T-SQL")
+        )
+        eq_(result.inserted_primary_key, (decimal.Decimal("1"),))
 
     def test_executemany(self, connection):
         conn = connection
@@ -254,6 +271,21 @@ class QueryTest(testing.AssertsExecutionResults, fixtures.TestBase):
         eq_(r.inserted_primary_key, (200,))
         r = connection.execute(t1.insert(), dict(descr="hello"))
         eq_(r.inserted_primary_key, (100,))
+
+    def test_compiler_symbol_conflict(self, connection, metadata):
+        t = Table("t", metadata, Column("POSTCOMPILE_DATA", String(50)))
+
+        t.create(connection)
+
+        connection.execute(t.insert().values(POSTCOMPILE_DATA="some data"))
+        eq_(
+            connection.scalar(
+                select(t.c.POSTCOMPILE_DATA).where(
+                    t.c.POSTCOMPILE_DATA.in_(["some data", "some other data"])
+                )
+            ),
+            "some data",
+        )
 
     @testing.provide_metadata
     def _test_disable_scope_identity(self):

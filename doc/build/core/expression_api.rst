@@ -19,4 +19,5 @@ see :ref:`sqlexpression_toplevel`.
     functions
     compiler
     serializer
+    foundation
     visitors

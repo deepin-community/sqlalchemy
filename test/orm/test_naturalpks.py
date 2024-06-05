@@ -12,9 +12,9 @@ from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import testing
 from sqlalchemy import TypeDecorator
-from sqlalchemy.orm import mapper
+from sqlalchemy.orm import make_transient
 from sqlalchemy.orm import relationship
-from sqlalchemy.orm.session import make_transient
+from sqlalchemy.orm import with_parent
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import eq_
@@ -108,40 +108,40 @@ class NaturalPKTest(fixtures.MappedTest):
     def test_entity(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session()
         u1 = User(username="jack", fullname="jack")
 
         sess.add(u1)
         sess.flush()
-        assert sess.query(User).get("jack") is u1
+        assert sess.get(User, "jack") is u1
 
         u1.username = "ed"
         sess.flush()
 
         def go():
-            assert sess.query(User).get("ed") is u1
+            assert sess.get(User, "ed") is u1
 
         self.assert_sql_count(testing.db, go, 0)
 
-        assert sess.query(User).get("jack") is None
+        assert sess.get(User, "jack") is None
 
         sess.expunge_all()
-        u1 = sess.query(User).get("ed")
+        u1 = sess.get(User, "ed")
         eq_(User(username="ed", fullname="jack"), u1)
 
     def test_load_after_expire(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session()
         u1 = User(username="jack", fullname="jack")
 
         sess.add(u1)
         sess.flush()
-        assert sess.query(User).get("jack") is u1
+        assert sess.get(User, "jack") is u1
 
         sess.execute(
             users.update().values({User.username: "jack"}), dict(username="ed")
@@ -154,14 +154,14 @@ class NaturalPKTest(fixtures.MappedTest):
         assert_raises(sa.orm.exc.ObjectDeletedError, getattr, u1, "username")
 
         sess.expunge_all()
-        assert sess.query(User).get("jack") is None
-        assert sess.query(User).get("ed").fullname == "jack"
+        assert sess.get(User, "jack") is None
+        assert sess.get(User, "ed").fullname == "jack"
 
     @testing.requires.returning
     def test_update_to_sql_expr(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session()
         u1 = User(username="jack", fullname="jack")
@@ -180,7 +180,7 @@ class NaturalPKTest(fixtures.MappedTest):
         # such as to bump a server side trigger
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session()
         u1 = User(username="jack", fullname="jack")
@@ -197,19 +197,19 @@ class NaturalPKTest(fixtures.MappedTest):
     def test_flush_new_pk_after_expire(self):
         User, users = self.classes.User, self.tables.users
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         sess = fixture_session()
         u1 = User(username="jack", fullname="jack")
 
         sess.add(u1)
         sess.flush()
-        assert sess.query(User).get("jack") is u1
+        assert sess.get(User, "jack") is u1
 
         sess.expire(u1)
         u1.username = "ed"
         sess.flush()
         sess.expunge_all()
-        assert sess.query(User).get("ed").fullname == "jack"
+        assert sess.get(User, "ed").fullname == "jack"
 
     @testing.requires.on_update_cascade
     def test_onetomany_passive(self):
@@ -226,7 +226,7 @@ class NaturalPKTest(fixtures.MappedTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -235,7 +235,7 @@ class NaturalPKTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session()
         u1 = User(username="jack", fullname="jack")
@@ -244,7 +244,7 @@ class NaturalPKTest(fixtures.MappedTest):
         sess.add(u1)
         sess.flush()
 
-        assert sess.query(Address).get("jack1") is u1.addresses[0]
+        assert sess.get(Address, "jack1") is u1.addresses[0]
 
         u1.username = "ed"
         sess.flush()
@@ -256,7 +256,7 @@ class NaturalPKTest(fixtures.MappedTest):
             sess.query(Address).all(),
         )
 
-        u1 = sess.query(User).get("ed")
+        u1 = sess.get(User, "ed")
         u1.username = "jack"
 
         def go():
@@ -275,16 +275,16 @@ class NaturalPKTest(fixtures.MappedTest):
                 username="jack",
                 addresses=[Address(username="jack"), Address(username="jack")],
             )
-            == sess.query(User).get("jack")
+            == sess.get(User, "jack")
         )
 
-        u1 = sess.query(User).get("jack")
+        u1 = sess.get(User, "jack")
         u1.addresses = []
         u1.username = "fred"
         sess.flush()
         sess.expunge_all()
-        assert sess.query(Address).get("jack1").username is None
-        u1 = sess.query(User).get("fred")
+        assert sess.get(Address, "jack1").username is None
+        u1 = sess.get(User, "fred")
         eq_(User(username="fred", fullname="jack"), u1)
 
     @testing.requires.on_update_cascade
@@ -325,8 +325,8 @@ class NaturalPKTest(fixtures.MappedTest):
                 addresses.insert(), dict(email="jack2", username="jack")
             )
 
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={"user": relationship(User, passive_updates=False)},
@@ -350,8 +350,8 @@ class NaturalPKTest(fixtures.MappedTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
@@ -429,7 +429,7 @@ class NaturalPKTest(fixtures.MappedTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -438,7 +438,7 @@ class NaturalPKTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session()
         u1 = User(username="jack", fullname="jack")
@@ -484,8 +484,8 @@ class NaturalPKTest(fixtures.MappedTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
@@ -525,7 +525,7 @@ class NaturalPKTest(fixtures.MappedTest):
             sess.query(Address).all(),
         )
 
-        u1 = sess.query(User).get("ed")
+        u1 = sess.get(User, "ed")
         assert len(u1.addresses) == 2  # load addresses
         u1.username = "fred"
 
@@ -564,7 +564,7 @@ class NaturalPKTest(fixtures.MappedTest):
             self.tables.users_to_items,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -576,7 +576,7 @@ class NaturalPKTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Item, items)
+        self.mapper_registry.map_imperatively(Item, items)
 
         sess = fixture_session()
         u1 = User(username="jack")
@@ -619,10 +619,10 @@ class NaturalPKTest(fixtures.MappedTest):
         eq_(["ed", "jack"], sorted([u.username for u in r[1].users]))
 
         sess.expunge_all()
-        u2 = sess.query(User).get(u2.username)
+        u2 = sess.get(User, u2.username)
         u2.username = "wendy"
         sess.flush()
-        r = sess.query(Item).with_parent(u2).all()
+        r = sess.query(Item).filter(with_parent(u2, User.items)).all()
         eq_(Item(itemname="item2"), r[0])
 
     def test_manytoone_deferred_relationship_expr(self):
@@ -635,8 +635,8 @@ class NaturalPKTest(fixtures.MappedTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
@@ -761,8 +761,10 @@ class TransientExceptionTesst(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"user": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"user": relationship(User)}
+        )
 
         sess = fixture_session()
         u1 = User(id=5, name="u1")
@@ -815,7 +817,7 @@ class ReversePKsTest(fixtures.MappedTest):
 
         PUBLISHED, EDITABLE, ARCHIVED = 1, 2, 3
 
-        mapper(User, user)
+        self.mapper_registry.map_imperatively(User, user)
 
         session = fixture_session()
 
@@ -838,16 +840,16 @@ class ReversePKsTest(fixtures.MappedTest):
         a_editable.status = PUBLISHED
 
         session.commit()
-        assert session.query(User).get([1, PUBLISHED]) is a_editable
-        assert session.query(User).get([1, ARCHIVED]) is a_published
+        assert session.get(User, [1, PUBLISHED]) is a_editable
+        assert session.get(User, [1, ARCHIVED]) is a_published
 
         a_published.status = PUBLISHED
         a_editable.status = EDITABLE
 
         session.commit()
 
-        assert session.query(User).get([1, PUBLISHED]) is a_published
-        assert session.query(User).get([1, EDITABLE]) is a_editable
+        assert session.get(User, [1, PUBLISHED]) is a_published
+        assert session.get(User, [1, EDITABLE]) is a_editable
 
     @testing.requires.savepoints
     def test_reverse_savepoint(self):
@@ -855,7 +857,7 @@ class ReversePKsTest(fixtures.MappedTest):
 
         PUBLISHED, EDITABLE, ARCHIVED = 1, 2, 3
 
-        mapper(User, user)
+        self.mapper_registry.map_imperatively(User, user)
 
         session = fixture_session()
 
@@ -909,7 +911,7 @@ class SelfReferentialTest(fixtures.MappedTest):
     def test_one_to_many_on_m2o(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={
@@ -924,7 +926,7 @@ class SelfReferentialTest(fixtures.MappedTest):
             },
         )
 
-        sess = fixture_session()
+        sess = fixture_session(future=True)
         n1 = Node(name="n1")
         sess.add(n1)
         n2 = Node(name="n11", parentnode=n1)
@@ -948,7 +950,7 @@ class SelfReferentialTest(fixtures.MappedTest):
     def test_one_to_many_on_o2m(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={
@@ -993,7 +995,7 @@ class SelfReferentialTest(fixtures.MappedTest):
     def _test_many_to_one(self, passive):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={
@@ -1079,7 +1081,7 @@ class NonPKCascadeTest(fixtures.MappedTest):
             self.tables.addresses,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -1088,7 +1090,7 @@ class NonPKCascadeTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session()
         u1 = User(username="jack", fullname="jack")
@@ -1103,7 +1105,7 @@ class NonPKCascadeTest(fixtures.MappedTest):
             [("jack",), ("jack",)],
         )
 
-        assert sess.query(Address).get(a1.id) is u1.addresses[0]
+        assert sess.get(Address, a1.id) is u1.addresses[0]
 
         u1.username = "ed"
         sess.flush()
@@ -1119,7 +1121,7 @@ class NonPKCascadeTest(fixtures.MappedTest):
             sess.query(Address).all(),
         )
 
-        u1 = sess.query(User).get(u1.id)
+        u1 = sess.get(User, u1.id)
         u1.username = "jack"
 
         def go():
@@ -1138,16 +1140,16 @@ class NonPKCascadeTest(fixtures.MappedTest):
                 username="jack",
                 addresses=[Address(username="jack"), Address(username="jack")],
             )
-            == sess.query(User).get(u1.id)
+            == sess.get(User, u1.id)
         )
         sess.expunge_all()
 
-        u1 = sess.query(User).get(u1.id)
+        u1 = sess.get(User, u1.id)
         u1.addresses = []
         u1.username = "fred"
         sess.flush()
         sess.expunge_all()
-        a1 = sess.query(Address).get(a1.id)
+        a1 = sess.get(Address, a1.id)
         eq_(a1.username, None)
 
         eq_(
@@ -1155,7 +1157,7 @@ class NonPKCascadeTest(fixtures.MappedTest):
             [(None,), (None,)],
         )
 
-        u1 = sess.query(User).get(u1.id)
+        u1 = sess.get(User, u1.id)
         eq_(User(username="fred", fullname="jack"), u1)
 
 
@@ -1227,7 +1229,7 @@ class CascadeToFKPKTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
             self.tables.addresses,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -1236,7 +1238,7 @@ class CascadeToFKPKTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session()
         a1 = Address(username="ed", email="ed@host1")
@@ -1268,7 +1270,7 @@ class CascadeToFKPKTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
             self.tables.addresses,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -1277,7 +1279,7 @@ class CascadeToFKPKTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session(autoflush=False)
         a1 = Address(username="ed", email="ed@host1")
@@ -1315,8 +1317,8 @@ class CascadeToFKPKTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
             self.tables.addresses,
         )
 
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
@@ -1357,8 +1359,8 @@ class CascadeToFKPKTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
         )
 
         # tests [ticket:1856]
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
@@ -1384,8 +1386,8 @@ class CascadeToFKPKTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
             self.tables.addresses,
         )
 
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={"user": relationship(User, passive_updates=True)},
@@ -1442,7 +1444,7 @@ class CascadeToFKPKTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
             self.tables.addresses,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -1451,7 +1453,7 @@ class CascadeToFKPKTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session()
         a1, a2 = (
@@ -1565,7 +1567,7 @@ class JoinedInheritanceTest(fixtures.MappedTest):
             "person", "manager", "engineer", "owner"
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Person,
             person,
             polymorphic_on=person.c.type,
@@ -1573,7 +1575,7 @@ class JoinedInheritanceTest(fixtures.MappedTest):
             passive_updates=passive_updates,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Engineer,
             engineer,
             inherits=Person,
@@ -1587,12 +1589,12 @@ class JoinedInheritanceTest(fixtures.MappedTest):
             },
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Manager, manager, inherits=Person, polymorphic_identity="manager"
         )
 
         if threelevel:
-            mapper(
+            self.mapper_registry.map_imperatively(
                 Owner, owner, inherits=Manager, polymorphic_identity="owner"
             )
 
@@ -1816,7 +1818,7 @@ class UnsortablePKTest(fixtures.MappedTest):
 
     @classmethod
     def setup_mappers(cls):
-        mapper(cls.classes.Data, cls.tables.data)
+        cls.mapper_registry.map_imperatively(cls.classes.Data, cls.tables.data)
 
     def test_updates_sorted(self):
         Data = self.classes.Data
@@ -1898,14 +1900,14 @@ class JoinedInheritancePKOnFKTest(fixtures.MappedTest):
             self.tables.engineer,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Person,
             person,
             polymorphic_on=person.c.type,
             polymorphic_identity="person",
             passive_updates=passive_updates,
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             Engineer,
             engineer,
             inherits=Person,

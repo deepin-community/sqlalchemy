@@ -3,13 +3,13 @@ from sqlalchemy import ForeignKey
 from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import testing
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import query
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import scoped_session
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.testing import assert_raises_message
+from sqlalchemy.testing import assert_warns_message
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
@@ -54,12 +54,12 @@ class ScopedSessionTest(fixtures.MappedTest):
             query = Session.query_property()
             custom_query = Session.query_property(query_cls=CustomQuery)
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             SomeObject,
             table1,
             properties={"options": relationship(SomeOtherObject)},
         )
-        mapper(SomeOtherObject, table2)
+        self.mapper_registry.map_imperatively(SomeOtherObject, table2)
 
         s = SomeObject(id=1, data="hello")
         sso = SomeOtherObject()
@@ -102,7 +102,7 @@ class ScopedSessionTest(fixtures.MappedTest):
             bind=testing.db,
         )
 
-        assert_raises_message(
+        assert_warns_message(
             sa.exc.SAWarning,
             "At least one scoped session is already present. ",
             Session.configure,
@@ -115,22 +115,22 @@ class ScopedSessionTest(fixtures.MappedTest):
         Session = scoped_session(sa.orm.sessionmaker(), mock_scope_func)
 
         s0 = SessionMaker()
-        assert s0.autocommit == False
+        assert s0.autoflush == True
 
         mock_scope_func.return_value = 0
         s1 = Session()
-        assert s1.autocommit == False
+        assert s1.autoflush == True
 
         assert_raises_message(
             sa.exc.InvalidRequestError,
             "Scoped session is already present",
             Session,
-            autocommit=True,
+            autoflush=False,
         )
 
         mock_scope_func.return_value = 1
-        s2 = Session(autocommit=True)
-        assert s2.autocommit == True
+        s2 = Session(autoflush=False)
+        assert s2.autoflush == False
 
     def test_methods_etc(self):
         mock_session = Mock()
@@ -157,6 +157,7 @@ class ScopedSessionTest(fixtures.MappedTest):
                     populate_existing=False,
                     with_for_update=None,
                     identity_token=None,
+                    execution_options=None,
                 ),
             ],
         )
@@ -209,3 +210,35 @@ class ScopedSessionTest(fixtures.MappedTest):
         ss = scoped_session(sessionmaker(testing.db, class_=MySession))
 
         is_(ss.get_bind(), testing.db)
+
+    def test_attributes(self):
+        expected = [
+            name
+            for cls in Session.mro()
+            for name in vars(cls)
+            if not name.startswith("_")
+        ]
+
+        ignore_list = {
+            "connection_callable",
+            "transaction",
+            "in_transaction",
+            "in_nested_transaction",
+            "get_transaction",
+            "get_nested_transaction",
+            "prepare",
+            "invalidate",
+            "bind_mapper",
+            "bind_table",
+            "enable_relationship_loading",
+            "dispatch",
+        }
+
+        SM = scoped_session(sa.orm.sessionmaker(testing.db))
+
+        missing = [
+            name
+            for name in expected
+            if not hasattr(SM, name) and name not in ignore_list
+        ]
+        eq_(missing, [])

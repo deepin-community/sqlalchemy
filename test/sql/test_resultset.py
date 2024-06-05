@@ -21,6 +21,7 @@ from sqlalchemy import table
 from sqlalchemy import testing
 from sqlalchemy import text
 from sqlalchemy import true
+from sqlalchemy import tuple_
 from sqlalchemy import type_coerce
 from sqlalchemy import TypeDecorator
 from sqlalchemy import util
@@ -49,6 +50,7 @@ from sqlalchemy.testing import expect_raises_message
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import in_
 from sqlalchemy.testing import is_
+from sqlalchemy.testing import is_false
 from sqlalchemy.testing import is_true
 from sqlalchemy.testing import le_
 from sqlalchemy.testing import mock
@@ -95,6 +97,58 @@ class CursorResultTest(fixtures.TablesTest):
             Column("user_id", INT, primary_key=True),
             Column("user_name", VARCHAR(20)),
             test_needs_acid=True,
+        )
+        Table(
+            "test",
+            metadata,
+            Column("x", Integer, primary_key=True),
+            Column("y", String(50)),
+        )
+
+    @testing.variation(
+        "type_", ["text", "driversql", "core", "textstar", "driverstar"]
+    )
+    def test_freeze(self, type_, connection):
+        """test #8963"""
+
+        users = self.tables.users
+        connection.execute(
+            users.insert(),
+            [
+                dict(user_id=1, user_name="john"),
+                dict(user_id=2, user_name="jack"),
+            ],
+        )
+
+        if type_.core:
+            stmt = select(users).order_by(users.c.user_id)
+        else:
+            if "star" in type_.name:
+                stmt = "select * from users order by user_id"
+            else:
+                stmt = "select user_id, user_name from users order by user_id"
+
+            if "text" in type_.name:
+                stmt = text(stmt)
+
+        if "driver" in type_.name:
+            result = connection.exec_driver_sql(stmt)
+        else:
+            result = connection.execute(stmt)
+
+        frozen = result.freeze()
+
+        unfrozen = frozen()
+        eq_(unfrozen.keys(), ["user_id", "user_name"])
+        eq_(unfrozen.all(), [(1, "john"), (2, "jack")])
+
+        unfrozen = frozen()
+        eq_(
+            unfrozen.mappings().all(),
+            [
+                {"user_id": 1, "user_name": "john"},
+                {"user_id": 2, "user_name": "jack"},
+            ],
         )
 
     def test_row_iteration(self, connection):
@@ -636,6 +690,80 @@ class CursorResultTest(fixtures.TablesTest):
         eq_(r._mapping[users.c.user_name], "john")
         eq_(r.user_name, "john")
 
+    @testing.fixture
+    def _ab_row_fixture(self, connection):
+        r = connection.execute(
+            select(literal(1).label("a"), literal(2).label("b"))
+        ).first()
+        return r
+
+    def test_named_tuple_access(self, _ab_row_fixture):
+        r = _ab_row_fixture
+        eq_(r.a, 1)
+        eq_(r.b, 2)
+
+    def test_named_tuple_missing_attr(self, _ab_row_fixture):
+        r = _ab_row_fixture
+        with expect_raises_message(
+            AttributeError, "Could not locate column in row for column 'c'"
+        ):
+            r.c
+
+    def test_named_tuple_no_delete_present(self, _ab_row_fixture):
+        r = _ab_row_fixture
+        with expect_raises_message(AttributeError, "can't delete attribute"):
+            del r.a
+
+    def test_named_tuple_no_delete_missing(self, _ab_row_fixture):
+        r = _ab_row_fixture
+        # including for non-existent attributes
+        with expect_raises_message(AttributeError, "can't delete attribute"):
+            del r.c
+
+    def test_named_tuple_no_assign_present(self, _ab_row_fixture):
+        r = _ab_row_fixture
+        with expect_raises_message(AttributeError, "can't set attribute"):
+            r.a = 5
+
+        with expect_raises_message(AttributeError, "can't set attribute"):
+            r.a += 5
+
+    def test_named_tuple_no_assign_missing(self, _ab_row_fixture):
+        r = _ab_row_fixture
+        # including for non-existent attributes
+        with expect_raises_message(AttributeError, "can't set attribute"):
+            r.c = 5
+
+    def test_named_tuple_no_self_assign_missing(self, _ab_row_fixture):
+        r = _ab_row_fixture
+        with expect_raises_message(
+            AttributeError, "Could not locate column in row for column 'c'"
+        ):
+            r.c += 5
+
+    def test_mapping_tuple_readonly_errors(self, connection):
+        r = connection.execute(
+            select(literal(1).label("a"), literal(2).label("b"))
+        ).first()
+        r = r._mapping
+        eq_(r["a"], 1)
+        eq_(r["b"], 2)
+
+        with expect_raises_message(
+            KeyError, "Could not locate column in row for column 'c'"
+        ):
+            r["c"]
+
+        with expect_raises_message(
+            TypeError, "'RowMapping' object does not support item assignment"
+        ):
+            r["a"] = 5
+
+        with expect_raises_message(
+            TypeError, "'RowMapping' object does not support item assignment"
+        ):
+            r["a"] += 5
+
     def test_column_accessor_err(self, connection):
         r = connection.execute(select(1)).first()
         assert_raises_message(
@@ -651,6 +779,7 @@ class CursorResultTest(fixtures.TablesTest):
             lambda: r._mapping["foo"],
         )
 
+    @testing.skip_if("+aiosqlite", "unknown issue")
     @testing.combinations(
         (True,),
         (False,),
@@ -774,6 +903,37 @@ class CursorResultTest(fixtures.TablesTest):
         connection.execute(users.delete())
         connection.execute(users.insert(), r._mapping)
         eq_(connection.execute(users.select()).fetchall(), [(1, "john")])
+
+    @testing.requires.tuple_in
+    def test_row_tuple_interpretation(self, connection):
+        """test #7292"""
+        users = self.tables.users
+
+        connection.execute(
+            users.insert(),
+            [
+                dict(user_id=1, user_name="u1"),
+                dict(user_id=2, user_name="u2"),
+                dict(user_id=3, user_name="u3"),
+            ],
+        )
+        rows = connection.execute(
+            select(users.c.user_id, users.c.user_name)
+        ).all()
+
+        # was previously needed
+        # rows = [(x, y) for x, y in rows]
+
+        new_stmt = (
+            select(users)
+            .where(tuple_(users.c.user_id, users.c.user_name).in_(rows))
+            .order_by(users.c.user_id)
+        )
+
+        eq_(
+            connection.execute(new_stmt).all(),
+            [(1, "u1"), (2, "u2"), (3, "u3")],
+        )
 
     def test_result_as_args(self, connection):
         users = self.tables.users
@@ -906,6 +1066,50 @@ class CursorResultTest(fixtures.TablesTest):
             ),
             set([True]),
         )
+
+    @testing.combinations(
+        (("name_label", "*"), False),
+        (("*", "name_label"), False),
+        (("user_id", "name_label", "user_name"), False),
+        (("user_id", "name_label", "*", "user_name"), True),
+        argnames="cols,other_cols_are_ambiguous",
+    )
+    @testing.requires.select_star_mixed
+    def test_label_against_star(
+        self, connection, cols, other_cols_are_ambiguous
+    ):
+        """test #8536"""
+        users = self.tables.users
+
+        connection.execute(users.insert(), dict(user_id=1, user_name="john"))
+
+        stmt = select(
+            *[
+                text("*")
+                if colname == "*"
+                else users.c.user_name.label("name_label")
+                if colname == "name_label"
+                else users.c[colname]
+                for colname in cols
+            ]
+        )
+
+        row = connection.execute(stmt).first()
+
+        eq_(row._mapping["name_label"], "john")
+
+        if other_cols_are_ambiguous:
+            with expect_raises_message(
+                exc.InvalidRequestError, "Ambiguous column name"
+            ):
+                row._mapping["user_id"]
+            with expect_raises_message(
+                exc.InvalidRequestError, "Ambiguous column name"
+            ):
+                row._mapping["user_name"]
+        else:
+            eq_(row._mapping["user_id"], 1)
+            eq_(row._mapping["user_name"], "john")
 
     def test_loose_matching_one(self, connection):
         users = self.tables.users
@@ -1660,6 +1864,195 @@ class CursorResultTest(fixtures.TablesTest):
         with expect_raises_message(Exception, "canary"):
             r.lastrowid
 
+    @testing.combinations("plain", "mapping", "scalar", argnames="result_type")
+    @testing.combinations(
+        "stream_results", "yield_per", "yield_per_meth", argnames="optname"
+    )
+    @testing.combinations(10, 50, argnames="value")
+    @testing.combinations("meth", "stmt", argnames="send_opts_how")
+    def test_stream_options(
+        self,
+        connection,
+        optname,
+        value,
+        send_opts_how,
+        result_type,
+        close_result_when_finished,
+    ):
+        table = self.tables.test
+
+        connection.execute(
+            table.insert(),
+            [{"x": i, "y": "t_%d" % i} for i in range(15, 3000)],
+        )
+
+        if optname == "stream_results":
+            opts = {"stream_results": True, "max_row_buffer": value}
+        elif optname == "yield_per":
+            opts = {"yield_per": value}
+        elif optname == "yield_per_meth":
+            opts = {"stream_results": True}
+        else:
+            assert False
+
+        if send_opts_how == "meth":
+            result = connection.execution_options(**opts).execute(
+                table.select()
+            )
+        elif send_opts_how == "stmt":
+            result = connection.execute(
+                table.select().execution_options(**opts)
+            )
+        else:
+            assert False
+
+        if result_type == "mapping":
+            result = result.mappings()
+            real_result = result._real_result
+        elif result_type == "scalar":
+            result = result.scalars()
+            real_result = result._real_result
+        else:
+            real_result = result
+
+        if optname == "yield_per_meth":
+            result = result.yield_per(value)
+
+        if result_type == "mapping" or result_type == "scalar":
+            real_result = result._real_result
+        else:
+            real_result = result
+
+        close_result_when_finished(result, consume=True)
+
+        if optname == "yield_per" and value is not None:
+            expected_opt = {
+                "stream_results": True,
+                "max_row_buffer": value,
+                "yield_per": value,
+            }
+        elif optname == "stream_results" and value is not None:
+            expected_opt = {
+                "stream_results": True,
+                "max_row_buffer": value,
+            }
+        else:
+            expected_opt = None
+
+        if expected_opt is not None:
+            eq_(real_result.context.execution_options, expected_opt)
+
+        if value is None:
+            assert isinstance(
+                real_result.cursor_strategy, _cursor.CursorFetchStrategy
+            )
+            return
+
+        assert isinstance(
+            real_result.cursor_strategy, _cursor.BufferedRowCursorFetchStrategy
+        )
+        eq_(real_result.cursor_strategy._max_row_buffer, value)
+
+        if optname == "yield_per" or optname == "yield_per_meth":
+            eq_(real_result.cursor_strategy._bufsize, value)
+        else:
+            eq_(real_result.cursor_strategy._bufsize, min(value, 5))
+        eq_(len(real_result.cursor_strategy._rowbuffer), 1)
+
+        next(result)
+        next(result)
+
+        if optname == "yield_per" or optname == "yield_per_meth":
+            eq_(len(real_result.cursor_strategy._rowbuffer), value - 1)
+        else:
+            # based on default growth of 5
+            eq_(len(real_result.cursor_strategy._rowbuffer), 4)
+
+        for i, row in enumerate(result):
+            if i == 186:
+                break
+
+        if optname == "yield_per" or optname == "yield_per_meth":
+            eq_(
+                len(real_result.cursor_strategy._rowbuffer),
+                value - (188 % value),
+            )
+        else:
+            # based on default growth of 5
+            eq_(
+                len(real_result.cursor_strategy._rowbuffer),
+                7 if value == 10 else 42,
+            )
+
+        if optname == "yield_per" or optname == "yield_per_meth":
+            # ensure partition is set up to same size
+            partition = next(result.partitions())
+            eq_(len(partition), value)
+
+    @testing.fixture
+    def autoclose_row_fixture(self, connection):
+        users = self.tables.users
+        connection.execute(
+            users.insert(),
+            [
+                {"user_id": 1, "name": "u1"},
+                {"user_id": 2, "name": "u2"},
+                {"user_id": 3, "name": "u3"},
+                {"user_id": 4, "name": "u4"},
+                {"user_id": 5, "name": "u5"},
+            ],
+        )
+
+    @testing.fixture(params=["plain", "scalars", "mapping"])
+    def result_fixture(self, request, connection):
+        users = self.tables.users
+
+        result_type = request.param
+
+        if result_type == "plain":
+            result = connection.execute(select(users))
+        elif result_type == "scalars":
+            result = connection.scalars(select(users))
+        elif result_type == "mapping":
+            result = connection.execute(select(users)).mappings()
+        else:
+            assert False
+
+        return result
+
+    def test_results_can_close(self, autoclose_row_fixture, result_fixture):
+        """test #8710"""
+
+        r1 = result_fixture
+
+        is_false(r1.closed)
+        is_false(r1._soft_closed)
+
+        r1._soft_close()
+        is_false(r1.closed)
+        is_true(r1._soft_closed)
+
+        r1.close()
+        is_true(r1.closed)
+        is_true(r1._soft_closed)
+
+    def test_autoclose_rows_exhausted_plain(
+        self, connection, autoclose_row_fixture, result_fixture
+    ):
+        result = result_fixture
+
+        assert not result._soft_closed
+        assert not result.closed
+
+        read_iterator = list(result)
+        eq_(len(read_iterator), 5)
+
+        assert result._soft_closed
+        assert not result.closed
+
+        result.close()
+        assert result.closed
+
 
 class KeyTargetingTest(fixtures.TablesTest):
     run_inserts = "once"
@@ -1766,6 +2159,7 @@ class KeyTargetingTest(fixtures.TablesTest):
     def test_keyed_targeting_no_label_at_all_one(self, connection):
         class not_named_max(expression.ColumnElement):
             name = "not_named_max"
+            inherit_cache = True
 
         @compiles(not_named_max)
         def visit_max(element, compiler, **kw):
@@ -1783,6 +2177,7 @@ class KeyTargetingTest(fixtures.TablesTest):
     def test_keyed_targeting_no_label_at_all_two(self, connection):
         class not_named_max(expression.ColumnElement):
             name = "not_named_max"
+            inherit_cache = True
 
         @compiles(not_named_max)
         def visit_max(element, compiler, **kw):
@@ -1957,9 +2352,9 @@ class KeyTargetingTest(fixtures.TablesTest):
                 "keyed2_a",
                 "keyed3_a",
                 "keyed2_a__1",
-                "keyed2_a__1",
+                "keyed2_a__2",
                 "keyed3_a__1",
-                "keyed3_a__1",
+                "keyed3_a__2",
                 "keyed3_d",
                 "keyed3_d__1",
             ],
@@ -2681,6 +3076,109 @@ class AlternateCursorResultTest(fixtures.TablesTest):
 
         # buffer of 98, plus buffer of 99 - 89, 10 rows
         eq_(len(result.cursor_strategy._rowbuffer), 10)
+
+        for i, row in enumerate(result):
+            if i == 206:
+                break
+
+        eq_(i, 206)
+
+    def test_iterator_remains_unbroken(self, connection):
+        """test related to #8710.
+
+        demonstrate that we can't close the cursor by catching
+        GeneratorExit inside of our iteration.  Leaving the iterable
+        block using break, then picking up again, would be directly
+        impacted by this.  So this provides a clear rationale for
+        providing context manager support for result objects.
+
+        """
+        table = self.tables.test
+
+        connection.execute(
+            table.insert(),
+            [{"x": i, "y": "t_%d" % i} for i in range(15, 250)],
+        )
+
+        result = connection.execute(table.select())
+        result = result.yield_per(100)
+        for i, row in enumerate(result):
+            if i == 188:
+                # this will raise GeneratorExit inside the iterator.
+                # so we can't close the DBAPI cursor here, we have plenty
+                # more rows to yield
+                break
+
+        eq_(i, 188)
+
+        # demonstrate getting more rows
+        for i, row in enumerate(result, 188):
+            if i == 206:
+                break
+
+        eq_(i, 206)
+
+    @testing.combinations(True, False, argnames="close_on_init")
+    @testing.combinations(
+        "fetchone", "fetchmany", "fetchall", argnames="fetch_style"
+    )
+    def test_buffered_fetch_auto_soft_close(
+        self, connection, close_on_init, fetch_style
+    ):
+        """test #7274"""
+
+        table = self.tables.test
+
+        connection.execute(
+            table.insert(),
+            [{"x": i, "y": "t_%d" % i} for i in range(15, 30)],
+        )
+
+        result = connection.execute(table.select().limit(15))
+        assert isinstance(result.cursor_strategy, _cursor.CursorFetchStrategy)
+
+        if close_on_init:
+            # close_on_init - the initial buffering will exhaust the cursor,
+            # should soft close immediately
+            result = result.yield_per(30)
+        else:
+            # not close_on_init - soft close will occur after fetching an
+            # empty buffer
+            result = result.yield_per(5)
+        assert isinstance(
+            result.cursor_strategy, _cursor.BufferedRowCursorFetchStrategy
+        )
+
+        with mock.patch.object(result, "_soft_close") as soft_close:
+            if fetch_style == "fetchone":
+                while True:
+                    row = result.fetchone()
+
+                    if row:
+                        eq_(soft_close.mock_calls, [])
+                    else:
+                        # fetchone() is also used by first(), scalar()
+                        # and one() which want to embed a hard close in one
+                        # step
+                        eq_(soft_close.mock_calls, [mock.call(hard=False)])
+                        break
+            elif fetch_style == "fetchmany":
+                while True:
+                    rows = result.fetchmany(5)
+
+                    if rows:
+                        eq_(soft_close.mock_calls, [])
+                    else:
+                        eq_(soft_close.mock_calls, [mock.call()])
+                        break
+            elif fetch_style == "fetchall":
+                rows = result.fetchall()
+
+                eq_(soft_close.mock_calls, [mock.call()])
+            else:
+                assert False
+
+        result.close()
 
     def test_buffered_fetchmany_yield_per_all(self, connection):
         table = self.tables.test

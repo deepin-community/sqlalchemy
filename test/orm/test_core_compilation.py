@@ -1,15 +1,22 @@
 from sqlalchemy import bindparam
+from sqlalchemy import Column
+from sqlalchemy import delete
 from sqlalchemy import exc
+from sqlalchemy import ForeignKey
 from sqlalchemy import func
 from sqlalchemy import insert
 from sqlalchemy import inspect
+from sqlalchemy import Integer
+from sqlalchemy import literal
 from sqlalchemy import literal_column
 from sqlalchemy import null
 from sqlalchemy import or_
 from sqlalchemy import select
+from sqlalchemy import String
 from sqlalchemy import testing
 from sqlalchemy import text
 from sqlalchemy import union
+from sqlalchemy import update
 from sqlalchemy import util
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import column_property
@@ -17,7 +24,6 @@ from sqlalchemy.orm import contains_eager
 from sqlalchemy.orm import deferred
 from sqlalchemy.orm import join as orm_join
 from sqlalchemy.orm import joinedload
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import query_expression
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import undefer
@@ -32,12 +38,17 @@ from sqlalchemy.sql.selectable import LABEL_STYLE_TABLENAME_PLUS_COL
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import eq_
+from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
+from sqlalchemy.testing import Variation
 from sqlalchemy.testing.assertions import expect_raises_message
 from sqlalchemy.testing.fixtures import fixture_session
 from sqlalchemy.testing.util import resolve_lambda
+from sqlalchemy.util.langhelpers import hybridproperty
 from .inheritance import _poly_fixtures
 from .test_query import QueryTest
+from ..sql import test_compiler
+from ..sql.test_compiler import CorrelateTest as _CoreCorrelateTest
 
 # TODO:
 # composites / unions, etc.
@@ -109,6 +120,18 @@ class SelectableTest(QueryTest, AssertsCompiledSQL):
             ],
         ),
         (
+            lambda user_alias: (user_alias,),
+            lambda User, user_alias: [
+                {
+                    "name": None,
+                    "type": User,
+                    "aliased": True,
+                    "expr": user_alias,
+                    "entity": user_alias,
+                }
+            ],
+        ),
+        (
             lambda User: (User.id,),
             lambda User: [
                 {
@@ -158,16 +181,130 @@ class SelectableTest(QueryTest, AssertsCompiledSQL):
                 },
             ],
         ),
+        (
+            lambda user_table: (user_table,),
+            lambda user_table: [
+                {
+                    "name": "id",
+                    "type": testing.eq_type_affinity(sqltypes.Integer),
+                    "expr": user_table.c.id,
+                },
+                {
+                    "name": "name",
+                    "type": testing.eq_type_affinity(sqltypes.String),
+                    "expr": user_table.c.name,
+                },
+            ],
+        ),
     )
     def test_column_descriptions(self, cols, expected):
         User, Address = self.classes("User", "Address")
+        ua = aliased(User)
 
-        cols = testing.resolve_lambda(cols, User=User, Address=Address)
-        expected = testing.resolve_lambda(expected, User=User, Address=Address)
+        cols = testing.resolve_lambda(
+            cols,
+            User=User,
+            Address=Address,
+            user_alias=ua,
+            user_table=inspect(User).local_table,
+        )
+        expected = testing.resolve_lambda(
+            expected,
+            User=User,
+            Address=Address,
+            user_alias=ua,
+            user_table=inspect(User).local_table,
+        )
 
         stmt = select(*cols)
-
         eq_(stmt.column_descriptions, expected)
+
+    @testing.combinations(insert, update, delete, argnames="dml_construct")
+    @testing.combinations(
+        (
+            lambda User: User,
+            lambda User: (User.id, User.name),
+            lambda User, user_table: {
+                "name": "User",
+                "type": User,
+                "expr": User,
+                "entity": User,
+                "table": user_table,
+            },
+            lambda User: [
+                {
+                    "name": "id",
+                    "type": testing.eq_type_affinity(sqltypes.Integer),
+                    "aliased": False,
+                    "expr": User.id,
+                    "entity": User,
+                },
+                {
+                    "name": "name",
+                    "type": testing.eq_type_affinity(sqltypes.String),
+                    "aliased": False,
+                    "expr": User.name,
+                    "entity": User,
+                },
+            ],
+        ),
+        argnames="entity, cols, expected_entity, expected_returning",
+    )
+    def test_dml_descriptions(
+        self, dml_construct, entity, cols, expected_entity, expected_returning
+    ):
+        User, Address = self.classes("User", "Address")
+
+        lambda_args = dict(
+            User=User,
+            Address=Address,
+            user_table=inspect(User).local_table,
+        )
+        entity = testing.resolve_lambda(entity, **lambda_args)
+        cols = testing.resolve_lambda(cols, **lambda_args)
+        expected_entity = testing.resolve_lambda(
+            expected_entity, **lambda_args
+        )
+        expected_returning = testing.resolve_lambda(
+            expected_returning, **lambda_args
+        )
+
+        stmt = dml_construct(entity)
+        if cols:
+            stmt = stmt.returning(*cols)
+
+        eq_(stmt.entity_description, expected_entity)
+        eq_(stmt.returning_column_descriptions, expected_returning)
+
+    def test_limit_offset_select(self):
+        User = self.classes.User
+
+        stmt = select(User.id).limit(5).offset(6)
+        self.assert_compile(
+            stmt,
+            "SELECT users.id FROM users LIMIT :param_1 OFFSET :param_2",
+            checkparams={"param_1": 5, "param_2": 6},
+        )
+
+    @testing.combinations(
+        (None, "ROWS ONLY"),
+        ({"percent": True}, "PERCENT ROWS ONLY"),
+        ({"percent": True, "with_ties": True}, "PERCENT ROWS WITH TIES"),
+    )
+    def test_fetch_offset_select(self, options, fetch_clause):
+        User = self.classes.User
+
+        if options is None:
+            stmt = select(User.id).fetch(5).offset(6)
+        else:
+            stmt = select(User.id).fetch(5, **options).offset(6)
+
+        self.assert_compile(
+            stmt,
+            "SELECT users.id FROM users OFFSET :param_1 "
+            "ROWS FETCH FIRST :param_2 %s" % (fetch_clause,),
+            checkparams={"param_1": 6, "param_2": 5},
+        )
 
 
 class ColumnsClauseFromsTest(QueryTest, AssertsCompiledSQL):
@@ -489,13 +626,13 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={"addresses": relationship(Address, lazy="joined")},
         )
 
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         return User, Address
 
@@ -504,7 +641,7 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
         User = self.classes.User
         users = self.tables.users
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -522,7 +659,7 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
         User = self.classes.User
         users = self.tables.users
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -793,16 +930,38 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
         )
         addresses, Address = (self.tables.addresses, self.classes.Address)
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=util.OrderedDict(
                 [
                     ("value", query_expression()),
+                    (
+                        "value_w_default",
+                        query_expression(default_expr=literal(15)),
+                    ),
                 ]
             ),
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
+
+        return User
+
+    @testing.fixture
+    def deferred_fixture(self):
+        User = self.classes.User
+        users = self.tables.users
+
+        self.mapper_registry.map_imperatively(
+            User,
+            users,
+            properties={
+                "name": deferred(users.c.name),
+                "name_upper": column_property(
+                    func.upper(users.c.name), deferred=True
+                ),
+            },
+        )
 
         return User
 
@@ -814,7 +973,7 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
         )
         addresses, Address = (self.tables.addresses, self.classes.Address)
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=util.OrderedDict(
@@ -833,7 +992,7 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
                 ]
             ),
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         return User
 
@@ -846,7 +1005,7 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=util.OrderedDict(
@@ -867,7 +1026,7 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
             ),
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
@@ -888,22 +1047,37 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
+            properties={
+                "addresses": relationship(Address, back_populates="user")
+            },
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
-                "user": relationship(
-                    User,
-                )
+                "user": relationship(User, back_populates="addresses")
             },
         )
 
         return User, Address
+
+    @testing.fixture
+    def hard_labeled_self_ref_fixture(self, decl_base):
+        class A(decl_base):
+            __tablename__ = "a"
+
+            id = Column(Integer, primary_key=True)
+            a_id = Column(ForeignKey("a.id"))
+            data = Column(String)
+            data_lower = column_property(func.lower(data).label("hardcoded"))
+
+            as_ = relationship("A")
+
+        return A
 
     def test_no_joinedload_embedded(self, plain_fixture):
         User, Address = plain_fixture
@@ -931,8 +1105,69 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
 
         self.assert_compile(
             stmt,
-            "SELECT users.name || :name_1 AS anon_1, users.id, "
+            "SELECT users.name || :name_1 AS anon_1, :param_1 AS anon_2, "
+            "users.id, "
             "users.name FROM users",
+        )
+
+    def test_exported_columns_query_expression(self, query_expression_fixture):
+        """test behaviors related to #8881"""
+        User = query_expression_fixture
+
+        stmt = select(User)
+
+        eq_(
+            stmt.selected_columns.keys(),
+            ["value_w_default", "id", "name"],
+        )
+
+        stmt = select(User).options(
+            with_expression(User.value, User.name + "foo")
+        )
+
+        # bigger problem.  we still don't include 'value', because we dont
+        # run query options here.  not "correct", but is at least consistent
+        # with deferred
+        eq_(
+            stmt.selected_columns.keys(),
+            ["value_w_default", "id", "name"],
+        )
+
+    def test_exported_columns_colprop(self, column_property_fixture):
+        """test behaviors related to #8881"""
+        User, _ = column_property_fixture
+
+        stmt = select(User)
+
+        # we get all the cols because they are not deferred and have a value
+        eq_(
+            stmt.selected_columns.keys(),
+            ["concat", "count", "id", "name"],
+        )
+
+    def test_exported_columns_deferred(self, deferred_fixture):
+        """test behaviors related to #8881"""
+        User = deferred_fixture
+
+        stmt = select(User)
+
+        # don't include 'name_upper' as it's deferred and readonly.
+        # "name" however is a column on the table, so even though it is
+        # deferred, it gets special treatment (related to #6661)
+        eq_(
+            stmt.selected_columns.keys(),
+            ["name", "id"],
+        )
+
+        stmt = select(User).options(
+            undefer(User.name), undefer(User.name_upper)
+        )
+
+        # undefer doesn't affect the readonly col because we dont look
+        # at options when we do selected_columns
+        eq_(
+            stmt.selected_columns.keys(),
+            ["name", "id"],
         )
 
     def test_with_expr_two(self, query_expression_fixture):
@@ -947,7 +1182,8 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
 
         self.assert_compile(
             stmt,
-            "SELECT anon_1.foo, anon_1.id, anon_1.name FROM "
+            "SELECT anon_1.foo, :param_1 AS anon_2, anon_1.id, "
+            "anon_1.name FROM "
             "(SELECT users.id AS id, users.name AS name, "
             "users.name || :name_1 AS foo FROM users) AS anon_1",
         )
@@ -984,6 +1220,10 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
 
         # test that the outer IS NULL is rendered, not adapted
         # test that the inner query includes the NULL we asked for
+
+        # ironically, this statement would not actually fetch due to the NULL
+        # not allowing adaption and therefore failing on the result set
+        # matching, this was addressed in #7154.
         self.assert_compile(
             stmt,
             "SELECT anon_2.anon_1, anon_2.id, anon_2.name, "
@@ -1009,22 +1249,84 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
             "ON users_1.id = addresses.user_id",
         )
 
-    def test_contains_eager_outermost(self, plain_fixture):
+    def test_joinedload_outermost_w_wrapping_elements(self, plain_fixture):
         User, Address = plain_fixture
 
         stmt = (
-            select(Address)
-            .join(Address.user)
-            .options(contains_eager(Address.user))
+            select(User)
+            .options(joinedload(User.addresses))
+            .limit(10)
+            .distinct()
         )
 
-        # render joined eager loads with stringify
         self.assert_compile(
             stmt,
-            "SELECT users.id, users.name, addresses.id AS id_1, "
-            "addresses.user_id, "
-            "addresses.email_address "
-            "FROM addresses JOIN users ON users.id = addresses.user_id",
+            "SELECT anon_1.id, anon_1.name, addresses_1.id AS id_1, "
+            "addresses_1.user_id, addresses_1.email_address FROM "
+            "(SELECT DISTINCT users.id AS id, users.name AS name FROM users "
+            "LIMIT :param_1) "
+            "AS anon_1 LEFT OUTER JOIN addresses AS addresses_1 "
+            "ON anon_1.id = addresses_1.user_id",
+        )
+
+    def test_contains_eager_outermost_w_wrapping_elements(self, plain_fixture):
+        """test #8569"""
+
+        User, Address = plain_fixture
+
+        stmt = (
+            select(User)
+            .join(User.addresses)
+            .options(contains_eager(User.addresses))
+            .limit(10)
+            .distinct()
+        )
+
+        self.assert_compile(
+            stmt,
+            "SELECT DISTINCT addresses.id, addresses.user_id, "
+            "addresses.email_address, users.id AS id_1, users.name "
+            "FROM users JOIN addresses ON users.id = addresses.user_id "
+            "LIMIT :param_1",
+        )
+
+    def test_joinedload_hard_labeled_selfref(
+        self, hard_labeled_self_ref_fixture
+    ):
+        """test #8569"""
+
+        A = hard_labeled_self_ref_fixture
+
+        stmt = select(A).options(joinedload(A.as_)).distinct()
+        self.assert_compile(
+            stmt,
+            "SELECT anon_1.hardcoded, anon_1.id, anon_1.a_id, anon_1.data, "
+            "lower(a_1.data) AS lower_1, a_1.id AS id_1, a_1.a_id AS a_id_1, "
+            "a_1.data AS data_1 FROM (SELECT DISTINCT lower(a.data) AS "
+            "hardcoded, a.id AS id, a.a_id AS a_id, a.data AS data FROM a) "
+            "AS anon_1 LEFT OUTER JOIN a AS a_1 ON anon_1.id = a_1.a_id",
+        )
+
+    def test_contains_eager_hard_labeled_selfref(
+        self, hard_labeled_self_ref_fixture
+    ):
+        """test #8569"""
+
+        A = hard_labeled_self_ref_fixture
+
+        a1 = aliased(A)
+        stmt = (
+            select(A)
+            .join(A.as_.of_type(a1))
+            .options(contains_eager(A.as_.of_type(a1)))
+            .distinct()
+        )
+        self.assert_compile(
+            stmt,
+            "SELECT DISTINCT lower(a.data) AS hardcoded, "
+            "lower(a_1.data) AS hardcoded, a_1.id, a_1.a_id, a_1.data, "
+            "a.id AS id_1, a.a_id AS a_id_1, a.data AS data_1 "
+            "FROM a JOIN a AS a_1 ON a.id = a_1.a_id",
         )
 
     def test_column_properties(self, column_property_fixture):
@@ -2290,7 +2592,7 @@ class RawSelectTest(QueryTest, AssertsCompiledSQL):
         class Foo(object):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Foo,
             self.tables.users,
             properties={
@@ -2317,3 +2619,55 @@ class RawSelectTest(QueryTest, AssertsCompiledSQL):
         )
         self.assert_compile(stmt1, expected)
         self.assert_compile(stmt2, expected)
+
+
+class CorrelateTest(fixtures.DeclarativeMappedTest, _CoreCorrelateTest):
+    @classmethod
+    def setup_classes(cls):
+        Base = cls.DeclarativeBasic
+
+        class T1(Base):
+            __tablename__ = "t1"
+            a = Column(Integer, primary_key=True)
+
+            @hybridproperty
+            def c(self):
+                return self
+
+        class T2(Base):
+            __tablename__ = "t2"
+            a = Column(Integer, primary_key=True)
+
+            @hybridproperty
+            def c(self):
+                return self
+
+    def _fixture(self):
+        t1, t2 = self.classes("T1", "T2")
+        return t1, t2, select(t1).where(t1.c.a == t2.c.a)
+
+
+class CrudParamOverlapTest(test_compiler.CrudParamOverlapTest):
+    @testing.fixture(
+        params=Variation.generate_cases("type_", ["orm"]),
+        ids=["orm"],
+    )
+    def crud_table_fixture(self, request):
+        type_ = request.param
+
+        if type_.orm:
+            from sqlalchemy.orm import declarative_base
+
+            Base = declarative_base()
+
+            class Foo(Base):
+                __tablename__ = "mytable"
+                myid = Column(Integer, primary_key=True)
+                name = Column(String)
+                description = Column(String)
+
+            table1 = Foo
+        else:
+            type_.fail()
+
+        yield table1

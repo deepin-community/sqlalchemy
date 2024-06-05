@@ -37,7 +37,7 @@ Glossary
             from sqlalchemy.orm import sessionmaker
 
 
-            engine = create_engine("mysql://user:pass:host/dbname", future=True)
+            engine = create_engine("mysql://user:pass@host/dbname", future=True)
             Session = sessionmaker(bind=engine, future=True)
 
         **ORM Queries in 2.0 style**
@@ -73,6 +73,33 @@ Glossary
 
             # Session returns a Result that has ORM entities
             list_of_users = result.scalars().all()
+
+    reflection
+    reflected
+        In SQLAlchemy, this term refers to the feature of querying a database's
+        schema catalogs in order to load information about existing tables,
+        columns, constraints, and other constructs.   SQLAlchemy includes
+        features that can both provide raw data for this information, as well
+        as that it can construct Core/ORM usable :class:`.Table` objects
+        from database schema catalogs automatically.
+
+        .. seealso::
+
+            :ref:`metadata_reflection_toplevel` - complete background on
+            database reflection.
+
+
+    imperative
+    declarative
+
+        In the SQLAlchemy ORM, these terms refer to two different styles of
+        mapping Python classes to database tables.
+
+        .. seealso::
+
+            :ref:`orm_declarative_mapping`
+
+            :ref:`orm_imperative_mapping`
 
     facade
 
@@ -146,7 +173,7 @@ Glossary
 
             `bind parameters <https://use-the-index-luke.com/sql/where-clause/bind-parameters>`_ - at Use The Index, Luke!
 
-
+            :ref:`tutorial_sending_parameters` - in the :ref:`unified_tutorial`
 
     selectable
         A term used in SQLAlchemy to describe a SQL construct that represents
@@ -163,7 +190,7 @@ Glossary
         dictionary is associated with a copy of the object, which contains key/value
         pairs significant to various internal systems, mostly within the ORM::
 
-            some_column = Column('some_column', Integer)
+            some_column = Column("some_column", Integer)
             some_column_annotated = some_column._annotate({"entity": User})
 
         The annotation system differs from the public dictionary :attr:`_schema.Column.info`
@@ -179,8 +206,9 @@ Glossary
         within the join expression.
 
     plugin
+    plugin-enabled
     plugin-specific
-        "plugin-specific" generally indicates a function or method in
+        "plugin-enabled" or "plugin-specific" generally indicates a function or method in
         SQLAlchemy Core which will behave differently when used in an ORM
         context.
 
@@ -236,7 +264,7 @@ Glossary
         on mapped classes.   When a class is mapped as such::
 
             class MyClass(Base):
-                __tablename__ = 'foo'
+                __tablename__ = "foo"
 
                 id = Column(Integer, primary_key=True)
                 data = Column(String)
@@ -285,8 +313,8 @@ Glossary
        An acronym for **Data Manipulation Language**.  DML is the subset of
        SQL that relational databases use to *modify* the data in tables. DML
        typically refers to the three widely familiar statements of INSERT,
-       UPDATE and  DELETE, otherwise known as :term:`CRUD` (acronym for "CReate,
-       Update, Delete").
+       UPDATE and  DELETE, otherwise known as :term:`CRUD` (acronym for "Create,
+       Read, Update, Delete").
 
         .. seealso::
 
@@ -406,6 +434,11 @@ Glossary
         to a mapped
         class each of which represents a particular database column
         or relationship to a related class.
+
+    identity key
+        A key associated with ORM-mapped objects that identifies their
+        primary key identity within the database, as well as their unique
+        identity within a :class:`_orm.Session` :term:`identity map`.
 
     identity map
         A mapping between Python objects and their database identities.
@@ -593,6 +626,7 @@ Glossary
             :ref:`pooling_toplevel`
 
     DBAPI
+    pep-249
         DBAPI is shorthand for the phrase "Python Database API
         Specification".  This is a widely used specification
         within Python to define common usage patterns for all
@@ -624,17 +658,28 @@ Glossary
             `Domain Model (via Wikipedia) <https://en.wikipedia.org/wiki/Domain_model>`_
 
     unit of work
-        This pattern is where the system transparently keeps
-        track of changes to objects and periodically flushes all those
-        pending changes out to the database. SQLAlchemy's Session
-        implements this pattern fully in a manner similar to that of
-        Hibernate.
+        A software architecture where a persistence system such as an object
+        relational mapper maintains a list of changes made to a series of
+        objects, and periodically flushes all those pending changes out to the
+        database.
+
+        SQLAlchemy's :class:`_orm.Session` implements the unit of work pattern,
+        where objects that are added to the :class:`_orm.Session` using methods
+        like :meth:`_orm.Session.add` will then participate in unit-of-work
+        style persistence.
+
+        For a walk-through of what unit of work persistence looks like in
+        SQLAlchemy, start with the section :ref:`tutorial_orm_data_manipulation`
+        in the :ref:`unified_tutorial`.    Then for more detail, see
+        :ref:`session_basics` in the general reference documentation.
 
         .. seealso::
 
             `Unit of Work (via Martin Fowler) <https://martinfowler.com/eaaCatalog/unitOfWork.html>`_
 
-            :doc:`orm/session`
+            :ref:`tutorial_orm_data_manipulation`
+
+            :ref:`session_basics`
 
     expire
     expired
@@ -1016,16 +1061,17 @@ Glossary
         single department.  A SQLAlchemy mapping might look like::
 
             class Department(Base):
-                __tablename__ = 'department'
+                __tablename__ = "department"
                 id = Column(Integer, primary_key=True)
                 name = Column(String(30))
                 employees = relationship("Employee")
 
+
             class Employee(Base):
-                __tablename__ = 'employee'
+                __tablename__ = "employee"
                 id = Column(Integer, primary_key=True)
                 name = Column(String(30))
-                dep_id = Column(Integer, ForeignKey('department.id'))
+                dep_id = Column(Integer, ForeignKey("department.id"))
 
         .. seealso::
 
@@ -1067,15 +1113,16 @@ Glossary
         single department.  A SQLAlchemy mapping might look like::
 
             class Department(Base):
-                __tablename__ = 'department'
+                __tablename__ = "department"
                 id = Column(Integer, primary_key=True)
                 name = Column(String(30))
 
+
             class Employee(Base):
-                __tablename__ = 'employee'
+                __tablename__ = "employee"
                 id = Column(Integer, primary_key=True)
                 name = Column(String(30))
-                dep_id = Column(Integer, ForeignKey('department.id'))
+                dep_id = Column(Integer, ForeignKey("department.id"))
                 department = relationship("Department")
 
         .. seealso::
@@ -1100,16 +1147,17 @@ Glossary
         used in :term:`one to many` as follows::
 
             class Department(Base):
-                __tablename__ = 'department'
+                __tablename__ = "department"
                 id = Column(Integer, primary_key=True)
                 name = Column(String(30))
                 employees = relationship("Employee", backref="department")
 
+
             class Employee(Base):
-                __tablename__ = 'employee'
+                __tablename__ = "employee"
                 id = Column(Integer, primary_key=True)
                 name = Column(String(30))
-                dep_id = Column(Integer, ForeignKey('department.id'))
+                dep_id = Column(Integer, ForeignKey("department.id"))
 
         A backref can be applied to any relationship, including one to many,
         many to one, and :term:`many to many`.
@@ -1161,26 +1209,27 @@ Glossary
         specified using plain table metadata::
 
             class Employee(Base):
-                __tablename__ = 'employee'
+                __tablename__ = "employee"
 
-                id = Column(Integer, primary_key)
+                id = Column(Integer, primary_key=True)
                 name = Column(String(30))
 
                 projects = relationship(
                     "Project",
-                    secondary=Table('employee_project', Base.metadata,
-                                Column("employee_id", Integer, ForeignKey('employee.id'),
-                                            primary_key=True),
-                                Column("project_id", Integer, ForeignKey('project.id'),
-                                            primary_key=True)
-                            ),
-                    backref="employees"
-                    )
+                    secondary=Table(
+                        "employee_project",
+                        Base.metadata,
+                        Column("employee_id", Integer, ForeignKey("employee.id"), primary_key=True),
+                        Column("project_id", Integer, ForeignKey("project.id"), primary_key=True),
+                    ),
+                    backref="employees",
+                )
+
 
             class Project(Base):
-                __tablename__ = 'project'
+                __tablename__ = "project"
 
-                id = Column(Integer, primary_key)
+                id = Column(Integer, primary_key=True)
                 name = Column(String(30))
 
         Above, the ``Employee.projects`` and back-referencing ``Project.employees``
@@ -1274,29 +1323,28 @@ Glossary
         A SQLAlchemy declarative mapping for the above might look like::
 
             class Employee(Base):
-                __tablename__ = 'employee'
+                __tablename__ = "employee"
 
-                id = Column(Integer, primary_key)
+                id = Column(Integer, primary_key=True)
                 name = Column(String(30))
 
 
             class Project(Base):
-                __tablename__ = 'project'
+                __tablename__ = "project"
 
-                id = Column(Integer, primary_key)
+                id = Column(Integer, primary_key=True)
                 name = Column(String(30))
 
 
             class EmployeeProject(Base):
-                __tablename__ = 'employee_project'
+                __tablename__ = "employee_project"
 
-                employee_id = Column(Integer, ForeignKey('employee.id'), primary_key=True)
-                project_id = Column(Integer, ForeignKey('project.id'), primary_key=True)
+                employee_id = Column(Integer, ForeignKey("employee.id"), primary_key=True)
+                project_id = Column(Integer, ForeignKey("project.id"), primary_key=True)
                 role_name = Column(String(30))
 
                 project = relationship("Project", backref="project_employees")
                 employee = relationship("Employee", backref="employee_projects")
-
 
         Employees can be added to a project given a role name::
 
@@ -1305,10 +1353,12 @@ Glossary
             emp1 = Employee(name="emp1")
             emp2 = Employee(name="emp2")
 
-            proj.project_employees.extend([
-                EmployeeProject(employee=emp1, role="tech lead"),
-                EmployeeProject(employee=emp2, role="account executive")
-            ])
+            proj.project_employees.extend(
+                [
+                    EmployeeProject(employee=emp1, role_name="tech lead"),
+                    EmployeeProject(employee=emp2, role_name="account executive"),
+                ]
+            )
 
         .. seealso::
 
@@ -1496,6 +1546,14 @@ Glossary
         The detached state is generally used when objects are being
         moved between sessions or when being moved to/from an external
         object cache.
+
+        .. seealso::
+
+            :ref:`session_object_states`
+
+    attached
+        Indicates an ORM object that is presently associated with a specific
+        :term:`Session`.
 
         .. seealso::
 

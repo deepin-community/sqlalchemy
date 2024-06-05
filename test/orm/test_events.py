@@ -8,11 +8,12 @@ from sqlalchemy import literal_column
 from sqlalchemy import select
 from sqlalchemy import String
 from sqlalchemy import testing
+from sqlalchemy import text
 from sqlalchemy import update
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import attributes
 from sqlalchemy.orm import class_mapper
 from sqlalchemy.orm import configure_mappers
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import deferred
 from sqlalchemy.orm import events
 from sqlalchemy.orm import EXT_SKIP
@@ -32,8 +33,10 @@ from sqlalchemy.orm import UserDefinedOption
 from sqlalchemy.sql.traversals import NO_CACHE
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
+from sqlalchemy.testing import assert_warns_message
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import eq_
+from sqlalchemy.testing import expect_raises
 from sqlalchemy.testing import expect_warnings
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_not
@@ -199,7 +202,7 @@ class ORMExecuteTest(_RemoveListeners, _fixtures.FixtureTest):
         def go(context):
             for elem in context.user_defined_options:
                 if isinstance(elem, SetShardOption):
-                    m1.update_execution_options(_sa_shard_id=elem.payload)
+                    m1.do_some_mock_thing(_sa_shard_id=elem.payload)
 
         stmt = select(User).options(
             loader_opt(User.addresses).options(loader_opt(Address.dingaling)),
@@ -215,21 +218,15 @@ class ORMExecuteTest(_RemoveListeners, _fixtures.FixtureTest):
             loader_opt(User.addresses).options(loader_opt(Address.dingaling)),
             SetShardOption("some_other_shard"),
         )
+
         for u in s.execute(stmt).unique().scalars():
             for a in u.addresses:
                 a.dingaling
         eq_(
             m1.mock_calls,
-            (
-                [call.update_execution_options(_sa_shard_id="some_shard")]
-                * num_opts
-            )
+            ([call.do_some_mock_thing(_sa_shard_id="some_shard")] * num_opts)
             + (
-                [
-                    call.update_execution_options(
-                        _sa_shard_id="some_other_shard"
-                    )
-                ]
+                [call.do_some_mock_thing(_sa_shard_id="some_other_shard")]
                 * num_opts
             ),
         )
@@ -295,6 +292,37 @@ class ORMExecuteTest(_RemoveListeners, _fixtures.FixtureTest):
             )
 
         return canary
+
+    @testing.combinations(
+        (lambda: select(1), True),
+        (lambda User: select(User).union(select(User)), True),
+        (lambda: text("select * from users"), False),
+    )
+    def test_non_orm_statements(self, stmt, is_select):
+        sess = Session(testing.db, future=True)
+
+        canary = self._flag_fixture(sess)
+
+        User, Address = self.classes("User", "Address")
+        stmt = testing.resolve_lambda(stmt, User=User)
+        sess.execute(stmt).all()
+
+        eq_(
+            canary.mock_calls,
+            [
+                call.options(
+                    bind_mapper=None,
+                    all_mappers=[],
+                    is_select=is_select,
+                    is_update=False,
+                    is_delete=False,
+                    is_orm_statement=False,
+                    is_relationship_load=False,
+                    is_column_load=False,
+                    lazy_loaded_from=None,
+                )
+            ],
+        )
 
     def test_all_mappers_accessor_one(self):
         User, Address = self.classes("User", "Address")
@@ -651,8 +679,8 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         class B(A):
             pass
 
-        mapper(A, users)
-        mapper(
+        self.mapper_registry.map_imperatively(A, users)
+        self.mapper_registry.map_imperatively(
             B, addresses, inherits=A, properties={"address_id": addresses.c.id}
         )
 
@@ -722,7 +750,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
     def test_init_allow_kw_modify(self):
         User, users = self.classes.User, self.tables.users
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         @event.listens_for(User, "init")
         def add_name(obj, args, kwargs):
@@ -739,7 +767,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
                 if kw.get("fail"):
                     raise Exception("failure")
 
-        mapper(Thing, users)
+        self.mapper_registry.map_imperatively(Thing, users)
 
         canary = Mock()
         event.listen(Thing, "init_failure", canary)
@@ -752,7 +780,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
     def test_listen_doesnt_force_compile(self):
         User, users = self.classes.User, self.tables.users
-        m = mapper(
+        m = self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -768,7 +796,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
     def test_basic(self):
         User, users = self.classes.User, self.tables.users
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         canary = self.listen_all(User)
         named_canary = self.listen_all(User, named=True)
 
@@ -777,9 +805,9 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         sess.add(u)
         sess.flush()
         sess.expire(u)
-        u = sess.query(User).get(u.id)
+        u = sess.get(User, u.id)
         sess.expunge_all()
-        u = sess.query(User).get(u.id)
+        u = sess.get(User, u.id)
         u.name = "u1 changed"
         sess.flush()
         sess.delete(u)
@@ -804,7 +832,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
     def test_insert_before_configured(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         canary = Mock()
 
@@ -823,7 +851,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
     def test_insert_flags(self):
         users, User = self.tables.users, self.classes.User
 
-        m = mapper(User, users)
+        m = self.mapper_registry.map_imperatively(User, users)
 
         canary = Mock()
 
@@ -856,7 +884,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
     def test_merge(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         canary = []
 
@@ -887,8 +915,8 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         class AdminUser(User):
             pass
 
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             AdminUser,
             addresses,
             inherits=User,
@@ -903,9 +931,9 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         am = AdminUser(name="au1", email_address="au1@e1")
         sess.add(am)
         sess.flush()
-        am = sess.query(AdminUser).populate_existing().get(am.id)
+        am = sess.get(AdminUser, am.id, populate_existing=True)
         sess.expunge_all()
-        am = sess.query(AdminUser).get(am.id)
+        am = sess.get(AdminUser, am.id)
         am.name = "au1 changed"
         sess.flush()
         sess.delete(am)
@@ -951,7 +979,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         canary1 = self.listen_all(User, propagate=True)
         canary2 = self.listen_all(User)
@@ -959,7 +987,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         class AdminUser(User):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             AdminUser,
             addresses,
             inherits=User,
@@ -971,9 +999,9 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         am = AdminUser(name="au1", email_address="au1@e1")
         sess.add(am)
         sess.flush()
-        am = sess.query(AdminUser).populate_existing().get(am.id)
+        am = sess.get(AdminUser, am.id, populate_existing=True)
         sess.expunge_all()
-        am = sess.query(AdminUser).get(am.id)
+        am = sess.get(AdminUser, am.id)
         am.name = "au1 changed"
         sess.flush()
         sess.delete(am)
@@ -1026,14 +1054,14 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
             self.classes.Item,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties={
                 "keywords": relationship(Keyword, secondary=item_keywords)
             },
         )
-        mapper(Keyword, keywords)
+        self.mapper_registry.map_imperatively(Keyword, keywords)
 
         canary1 = self.listen_all(Item)
         canary2 = self.listen_all(Keyword)
@@ -1060,8 +1088,8 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         m1 = Mock()
 
-        mapper(User, users)
-        assert_raises_message(
+        self.mapper_registry.map_imperatively(User, users)
+        assert_warns_message(
             sa.exc.SAWarning,
             r"before_configured' and 'after_configured' ORM events only "
             r"invoke with the mapper\(\) function or Mapper class as "
@@ -1072,7 +1100,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
             m1,
         )
 
-        assert_raises_message(
+        assert_warns_message(
             sa.exc.SAWarning,
             r"before_configured' and 'after_configured' ORM events only "
             r"invoke with the mapper\(\) function or Mapper class as "
@@ -1089,7 +1117,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         m1 = Mock()
         m2 = Mock()
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         event.listen(mapper, "before_configured", m1)
         event.listen(mapper, "after_configured", m2)
@@ -1114,9 +1142,9 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         event.listen(Mapper, "instrument_class", instrument_class)
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         eq_(canary, [User])
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         eq_(canary, [User, Address])
 
     def test_instrument_class_precedes_class_instrumentation(self):
@@ -1145,9 +1173,9 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         def class_instrument(class_):
             canary.class_instrument(class_)
 
-        mapper(MyClass, users)
+        self.mapper_registry.map_imperatively(MyClass, users)
 
-        mapper(MySubClass, inherits=MyClass)
+        self.mapper_registry.map_imperatively(MySubClass, inherits=MyClass)
 
         m1 = MyClass()
         assert attributes.instance_state(m1)
@@ -1186,7 +1214,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         """
 
         User, users = self.classes.User, self.tables.users
-        ump = mapper(User, users)
+        ump = self.mapper_registry.map_imperatively(User, users)
 
         AnotherBase = declarative_base()
 
@@ -1213,6 +1241,7 @@ class MapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         # not been loaded yet (Employer), and therefore cannot be configured:
         class Mammal(Animal):
             nonexistent = relationship("Nonexistent")
+            __mapper_args__ = {"polymorphic_identity": "mammal"}
 
         # These new classes should not be configured at this point:
         unconfigured = list(mapperlib._unconfigured_mappers())
@@ -1428,7 +1457,7 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         event.listen(User, "before_insert", evt, raw=True)
 
-        m = mapper(User, users)
+        m = self.mapper_registry.map_imperatively(User, users)
         m.dispatch.before_insert(5, 6, 7)
         eq_(canary, [5])
 
@@ -1454,11 +1483,11 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         event.listen(User, "before_insert", canary, propagate=True, raw=True)
 
-        m = mapper(SubUser, users)
+        m = self.mapper_registry.map_imperatively(SubUser, users)
         m.dispatch.before_insert(5, 6, 7)
         eq_(canary.mock_calls, [call(5, 6, 7)])
 
-        m2 = mapper(SubSubUser, users)
+        m2 = self.mapper_registry.map_imperatively(SubSubUser, users)
 
         m2.dispatch.before_insert(8, 9, 10)
         eq_(canary.mock_calls, [call(5, 6, 7), call(8, 9, 10)])
@@ -1482,7 +1511,7 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         event.listen(User, "before_insert", evt, propagate=False)
 
-        m = mapper(SubUser, users)
+        m = self.mapper_registry.map_imperatively(SubUser, users)
         m.dispatch.before_insert(5, 6, 7)
         eq_(canary, [])
 
@@ -1498,7 +1527,7 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         class SubUser(User):
             pass
 
-        m = mapper(SubUser, users)
+        m = self.mapper_registry.map_imperatively(SubUser, users)
 
         canary = []
 
@@ -1525,12 +1554,12 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         class SubSubUser(SubUser):
             pass
 
-        m = mapper(SubUser, users)
+        m = self.mapper_registry.map_imperatively(SubUser, users)
 
         canary = Mock()
         event.listen(User, "before_insert", canary, propagate=True, raw=True)
 
-        m2 = mapper(SubSubUser, users)
+        m2 = self.mapper_registry.map_imperatively(SubSubUser, users)
 
         m.dispatch.before_insert(5, 6, 7)
         eq_(canary.mock_calls, [call(5, 6, 7)])
@@ -1550,7 +1579,7 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         class SubUser(User):
             pass
 
-        m = mapper(SubUser, users)
+        m = self.mapper_registry.map_imperatively(SubUser, users)
 
         canary = []
 
@@ -1578,7 +1607,7 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         event.listen(User, "load", evt, raw=True)
 
-        m = mapper(User, users)
+        m = self.mapper_registry.map_imperatively(User, users)
         m.class_manager.dispatch.load(5)
         eq_(canary, [5])
 
@@ -1604,8 +1633,8 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         event.listen(User, "load", evt, propagate=True, raw=True)
 
-        m = mapper(SubUser, users)
-        m2 = mapper(SubUser2, users)
+        m = self.mapper_registry.map_imperatively(SubUser, users)
+        m2 = self.mapper_registry.map_imperatively(SubUser2, users)
 
         m.class_manager.dispatch.load(5)
         eq_(canary, [5])
@@ -1635,8 +1664,8 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         event.listen(User, "load", canary, propagate=True, raw=False)
 
         # reversing these fixes....
-        m = mapper(SubUser, users)
-        m2 = mapper(User, users)
+        m = self.mapper_registry.map_imperatively(SubUser, users)
+        m2 = self.mapper_registry.map_imperatively(User, users)
 
         instance = Mock()
         m.class_manager.dispatch.load(instance)
@@ -1646,7 +1675,7 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         m2.class_manager.dispatch.load(instance)
         eq_(canary.mock_calls, [call(instance.obj()), call(instance.obj())])
 
-        m3 = mapper(SubUser2, users)
+        m3 = self.mapper_registry.map_imperatively(SubUser2, users)
         m3.class_manager.dispatch.load(instance)
         eq_(
             canary.mock_calls,
@@ -1671,7 +1700,7 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         event.listen(User, "load", evt, propagate=False)
 
-        m = mapper(SubUser, users)
+        m = self.mapper_registry.map_imperatively(SubUser, users)
         m.class_manager.dispatch.load(5)
         eq_(canary, [])
 
@@ -1756,7 +1785,7 @@ class DeferredMapperEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         event.listen(User, "attribute_instrument", evt, propagate=False)
 
-        mapper(SubUser, users)
+        self.mapper_registry.map_imperatively(SubUser, users)
         instrumentation._instrumentation_factory.dispatch.attribute_instrument(
             5
         )
@@ -1770,7 +1799,7 @@ class LoadTest(_fixtures.FixtureTest):
     def setup_mappers(cls):
         User, users = cls.classes.User, cls.tables.users
 
-        mapper(User, users)
+        cls.mapper_registry.map_imperatively(User, users)
 
     def _fixture(self):
         User = self.classes.User
@@ -1833,8 +1862,8 @@ class RemovalTest(_fixtures.FixtureTest):
         class AdminUser(User):
             pass
 
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             AdminUser,
             addresses,
             inherits=User,
@@ -1868,7 +1897,7 @@ class RemovalTest(_fixtures.FixtureTest):
         class User(Foo):
             pass
 
-        m = mapper(User, users)
+        m = self.mapper_registry.map_imperatively(User, users)
 
         u1 = User()
         m.dispatch.before_insert(m, None, attributes.instance_state(u1))
@@ -1884,7 +1913,7 @@ class RemovalTest(_fixtures.FixtureTest):
         class Bar(Foo):
             pass
 
-        m = mapper(Bar, users)
+        m = self.mapper_registry.map_imperatively(Bar, users)
         b1 = Bar()
         m.dispatch.before_insert(m, None, attributes.instance_state(b1))
         eq_(fn.call_count, 1)
@@ -1898,7 +1927,7 @@ class RemovalTest(_fixtures.FixtureTest):
             pass
 
         event.listen(User, "load", fn)
-        m = mapper(User, users)
+        m = self.mapper_registry.map_imperatively(User, users)
 
         u1 = User()
         m.class_manager.dispatch.load(u1._sa_instance_state, "u1")
@@ -1917,7 +1946,7 @@ class RefreshTest(_fixtures.FixtureTest):
     def setup_mappers(cls):
         User, users = cls.classes.User, cls.tables.users
 
-        mapper(User, users)
+        cls.mapper_registry.map_imperatively(User, users)
 
     def _fixture(self):
         User = self.classes.User
@@ -2082,6 +2111,35 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         s = fixture_session()
         assert my_listener in s.dispatch.before_flush
 
+    @testing.combinations(True, False, argnames="m1")
+    @testing.combinations(True, False, argnames="m2")
+    @testing.combinations(True, False, argnames="m3")
+    @testing.combinations(True, False, argnames="use_insert")
+    def test_sessionmaker_gen_after_session_listen(
+        self, m1, m2, m3, use_insert
+    ):
+        m1 = Mock() if m1 else None
+        m2 = Mock() if m2 else None
+        m3 = Mock() if m3 else None
+
+        if m1:
+            event.listen(Session, "before_flush", m1, insert=use_insert)
+
+        factory = sessionmaker()
+
+        if m2:
+            event.listen(factory, "before_flush", m2, insert=use_insert)
+
+        if m3:
+            event.listen(factory, "before_flush", m3, insert=use_insert)
+
+        st = factory()
+        st.dispatch.before_flush()
+
+        for m in m1, m2, m3:
+            if m:
+                eq_(m.mock_calls, [call()])
+
     def test_sessionmaker_listen(self):
         """test that listen can be applied to individual
         scoped_session() classes."""
@@ -2188,38 +2246,10 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         return sess, canary
 
-    def test_flush_autocommit_hook(self):
-        User, users = self.classes.User, self.tables.users
-
-        mapper(User, users)
-
-        sess, canary = self._listener_fixture(
-            autoflush=False, autocommit=True, expire_on_commit=False
-        )
-
-        u = User(name="u1")
-        sess.add(u)
-        sess.flush()
-        eq_(
-            canary,
-            [
-                "before_attach",
-                "after_attach",
-                "before_flush",
-                "after_transaction_create",
-                "after_begin",
-                "after_flush",
-                "after_flush_postexec",
-                "before_commit",
-                "after_commit",
-                "after_transaction_end",
-            ],
-        )
-
     def test_rollback_hook(self):
         User, users = self.classes.User, self.tables.users
         sess, canary = self._listener_fixture()
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         u = User(name="u1", id=1)
         sess.add(u)
@@ -2227,7 +2257,12 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         u2 = User(name="u1", id=1)
         sess.add(u2)
-        assert_raises(sa.exc.SAWarning, sess.commit)
+
+        with expect_raises(sa.exc.IntegrityError), expect_warnings(
+            "New instance"
+        ):
+            sess.commit()
+
         sess.rollback()
         eq_(
             canary,
@@ -2261,7 +2296,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
     def test_can_use_session_in_outer_rollback_hook(self):
         User, users = self.classes.User, self.tables.users
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session()
 
@@ -2279,7 +2314,11 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         u2 = User(name="u1", id=1)
         sess.add(u2)
-        assert_raises(sa.exc.SAWarning, sess.commit)
+        with expect_raises(sa.exc.IntegrityError), expect_warnings(
+            "New instance"
+        ):
+            sess.commit()
+
         sess.rollback()
         eq_(assertions, [True, True])
 
@@ -2304,7 +2343,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         sess, canary = self._listener_fixture()
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         u = User(name="u1")
         sess.add(u)
@@ -2329,7 +2368,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         sess, canary = self._listener_fixture()
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         u = User(name="u1")
         sess.add(u)
         sess.flush()
@@ -2364,7 +2403,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
             else:
                 assert inst not in session.new
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         u = User(name="u1")
         sess.add(u)
         sess.flush()
@@ -2383,7 +2422,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
             else:
                 assert inst in session.new
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         u = User(name="u1")
         sess.add(u)
         sess.flush()
@@ -2412,7 +2451,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         event.listen(sess, "after_begin", canary.after_begin)
         event.listen(sess, "after_bulk_update", canary.after_bulk_update)
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess.query(User).update({"name": "foo"})
 
@@ -2432,7 +2471,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
         event.listen(sess, "after_begin", canary.after_begin)
         event.listen(sess, "after_bulk_delete", canary.after_bulk_delete)
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess.query(User).delete()
 
@@ -2453,7 +2492,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
     def test_reentrant_flush(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         def before_flush(session, flush_context, objects):
             session.flush()
@@ -2468,7 +2507,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
     def test_before_flush_affects_flush_plan(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         def before_flush(session, flush_context, objects):
             for obj in list(session.new) + list(session.dirty):
@@ -2521,7 +2560,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
     def test_before_flush_affects_dirty(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         def before_flush(session, flush_context, objects):
             for obj in list(session.identity_map.values()):
@@ -2546,7 +2585,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
     def test_snapshot_still_present_after_commit(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session()
 
@@ -2568,7 +2607,7 @@ class SessionEventsTest(_RemoveListeners, _fixtures.FixtureTest):
     def test_snapshot_still_present_after_rollback(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session()
 
@@ -2596,7 +2635,7 @@ class SessionLifecycleEventsTest(_RemoveListeners, _fixtures.FixtureTest):
 
         if include_address:
             addresses, Address = self.tables.addresses, self.classes.Address
-            mapper(
+            self.mapper_registry.map_imperatively(
                 User,
                 users,
                 properties={
@@ -2605,9 +2644,9 @@ class SessionLifecycleEventsTest(_RemoveListeners, _fixtures.FixtureTest):
                     )
                 },
             )
-            mapper(Address, addresses)
+            self.mapper_registry.map_imperatively(Address, addresses)
         else:
-            mapper(User, users)
+            self.mapper_registry.map_imperatively(User, users)
 
         listener = Mock()
 
@@ -3142,7 +3181,7 @@ class QueryEventsTest(
         User = cls.classes.User
         users = cls.tables.users
 
-        mapper(User, users)
+        cls.mapper_registry.map_imperatively(User, users)
 
     def test_before_compile(self):
         @event.listens_for(query.Query, "before_compile", retval=True)
@@ -3305,7 +3344,9 @@ class RefreshFlushInReturningTest(fixtures.MappedTest):
     def setup_mappers(cls):
         Thing = cls.classes.Thing
 
-        mapper(Thing, cls.tables.test, eager_defaults=True)
+        cls.mapper_registry.map_imperatively(
+            Thing, cls.tables.test, eager_defaults=True
+        )
 
     def test_no_attr_events_flush(self):
         Thing = self.classes.Thing

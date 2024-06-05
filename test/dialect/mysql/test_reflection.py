@@ -307,7 +307,7 @@ class ReflectionTest(fixtures.TestBase, AssertsCompiledSQL):
         if testing.against("mariadb"):
             kwargs = dict(
                 mariadb_engine="MEMORY",
-                mariadb_default_charset="utf8",
+                mariadb_default_charset="utf8mb4",
                 mariadb_auto_increment="5",
                 mariadb_avg_row_length="3",
                 mariadb_password="secret",
@@ -338,7 +338,7 @@ class ReflectionTest(fixtures.TestBase, AssertsCompiledSQL):
         if testing.against("mariadb"):
             assert def_table.kwargs["mariadb_engine"] == "MEMORY"
             assert def_table.comment == comment
-            assert def_table.kwargs["mariadb_default_charset"] == "utf8"
+            assert def_table.kwargs["mariadb_default_charset"] == "utf8mb4"
             assert def_table.kwargs["mariadb_auto_increment"] == "5"
             assert def_table.kwargs["mariadb_avg_row_length"] == "3"
             assert def_table.kwargs["mariadb_password"] == "secret"
@@ -348,7 +348,7 @@ class ReflectionTest(fixtures.TestBase, AssertsCompiledSQL):
 
             assert reflected.comment == comment
             assert reflected.kwargs["mariadb_comment"] == comment
-            assert reflected.kwargs["mariadb_default charset"] == "utf8"
+            assert reflected.kwargs["mariadb_default charset"] == "utf8mb4"
             assert reflected.kwargs["mariadb_avg_row_length"] == "3"
             assert reflected.kwargs["mariadb_connection"] == "fish"
 
@@ -370,7 +370,10 @@ class ReflectionTest(fixtures.TestBase, AssertsCompiledSQL):
 
             assert reflected.comment == comment
             assert reflected.kwargs["mysql_comment"] == comment
-            assert reflected.kwargs["mysql_default charset"] == "utf8"
+            assert reflected.kwargs["mysql_default charset"] in (
+                "utf8",
+                "utf8mb3",
+            )
             assert reflected.kwargs["mysql_avg_row_length"] == "3"
             assert reflected.kwargs["mysql_connection"] == "fish"
 
@@ -756,6 +759,93 @@ class ReflectionTest(fixtures.TestBase, AssertsCompiledSQL):
             "CREATE FULLTEXT INDEX textdata_ix ON mytable (textdata)",
         )
 
+    def test_reflect_index_col_length(self, metadata, connection):
+        """test for #9047"""
+
+        tt = Table(
+            "test_table",
+            metadata,
+            Column("signal_type", Integer(), nullable=False),
+            Column("signal_data", String(200), nullable=False),
+            Column("signal_data_2", String(200), nullable=False),
+            Index(
+                "ix_1",
+                "signal_type",
+                "signal_data",
+                mysql_length={"signal_data": 25},
+                mariadb_length={"signal_data": 25},
+            ),
+        )
+        Index(
+            "ix_2",
+            tt.c.signal_type,
+            tt.c.signal_data,
+            tt.c.signal_data_2,
+            mysql_length={"signal_data": 25, "signal_data_2": 10},
+            mariadb_length={"signal_data": 25, "signal_data_2": 10},
+        )
+
+        mysql_length = (
+            "mysql_length"
+            if not connection.dialect.is_mariadb
+            else "mariadb_length"
+        )
+        eq_(
+            {idx.name: idx.kwargs[mysql_length] for idx in tt.indexes},
+            {
+                "ix_1": {"signal_data": 25},
+                "ix_2": {"signal_data": 25, "signal_data_2": 10},
+            },
+        )
+
+        metadata.create_all(connection)
+
+        eq_(
+            sorted(
+                inspect(connection).get_indexes("test_table"),
+                key=lambda rec: rec["name"],
+            ),
+            [
+                {
+                    "name": "ix_1",
+                    "column_names": ["signal_type", "signal_data"],
+                    "unique": False,
+                    "dialect_options": {mysql_length: {"signal_data": 25}},
+                },
+                {
+                    "name": "ix_2",
+                    "column_names": [
+                        "signal_type",
+                        "signal_data",
+                        "signal_data_2",
+                    ],
+                    "unique": False,
+                    "dialect_options": {
+                        mysql_length: {
+                            "signal_data": 25,
+                            "signal_data_2": 10,
+                        }
+                    },
+                },
+            ],
+        )
+
+        new_metadata = MetaData()
+        reflected_table = Table(
+            "test_table", new_metadata, autoload_with=connection
+        )
+
+        eq_(
+            {
+                idx.name: idx.kwargs[mysql_length]
+                for idx in reflected_table.indexes
+            },
+            {
+                "ix_1": {"signal_data": 25},
+                "ix_2": {"signal_data": 25, "signal_data_2": 10},
+            },
+        )
+
     @testing.requires.mysql_ngram_fulltext
     def test_reflect_fulltext_comment(
         self,
@@ -1119,8 +1209,6 @@ class ReflectionTest(fixtures.TestBase, AssertsCompiledSQL):
 
 
 class RawReflectionTest(fixtures.TestBase):
-    __backend__ = True
-
     def setup_test(self):
         dialect = mysql.dialect()
         self.parser = _reflection.MySQLTableDefinitionParser(
@@ -1246,3 +1334,18 @@ class RawReflectionTest(fixtures.TestBase):
                 "SET NULL",
             ),
         )
+
+    @testing.combinations(
+        (
+            "CREATE ALGORITHM=UNDEFINED DEFINER=`scott`@`%` "
+            "SQL SECURITY DEFINER VIEW `v1` AS SELECT",
+            True,
+        ),
+        ("CREATE VIEW `v1` AS SELECT", True),
+        ("CREATE TABLE `v1`", False),
+        ("CREATE TABLE `VIEW`", False),
+        ("CREATE TABLE `VIEW_THINGS`", False),
+        ("CREATE TABLE `A VIEW`", False),
+    )
+    def test_is_view(self, sql, expected):
+        is_(self.parser._check_view(sql), expected)

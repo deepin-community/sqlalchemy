@@ -38,7 +38,11 @@ Base = None
 mapper_registry = None
 
 
-class DeclarativeTestBase(fixtures.TestBase, testing.AssertsExecutionResults):
+class DeclarativeTestBase(
+    testing.AssertsCompiledSQL,
+    fixtures.TestBase,
+    testing.AssertsExecutionResults,
+):
     def setup_test(self):
         global Base, mapper_registry
 
@@ -53,6 +57,20 @@ class DeclarativeTestBase(fixtures.TestBase, testing.AssertsExecutionResults):
 
 
 class DeclarativeMixinTest(DeclarativeTestBase):
+    @testing.requires.python3
+    def test_init_subclass_works(self, registry):
+        class Base:
+            def __init_subclass__(cls):
+                cls.id = Column(Integer, primary_key=True)
+
+        Base = registry.generate_base(cls=Base)
+
+        class Foo(Base):
+            __tablename__ = "foo"
+            name = Column(String)
+
+        self.assert_compile(select(Foo), "SELECT foo.name, foo.id FROM foo")
+
     def test_simple_wbase(self):
         class MyMixin(object):
 
@@ -1639,7 +1657,7 @@ class DeclarativeMixinPropertyTest(
         self.assert_compile(
             s.query(Derived.data_syn).filter(Derived.data_syn == "foo"),
             "SELECT test.data AS test_data FROM test WHERE test.data = "
-            ":data_1 AND test.type IN ([POSTCOMPILE_type_1])",
+            ":data_1 AND test.type IN (__[POSTCOMPILE_type_1])",
             dialect="default",
             checkparams={"type_1": ["derived"], "data_1": "foo"},
         )
@@ -1856,14 +1874,11 @@ class DeclaredAttrTest(DeclarativeTestBase, testing.AssertsCompiledSQL):
             def my_prop(cls):
                 return Column("x", Integer)
 
-        assert_raises_message(
-            sa.exc.SAWarning,
+        with expect_warnings(
             "Unmanaged access of declarative attribute my_prop "
-            "from non-mapped class Mixin",
-            getattr,
-            Mixin,
-            "my_prop",
-        )
+            "from non-mapped class Mixin"
+        ):
+            Mixin.my_prop
 
     def test_can_we_access_the_mixin_straight_special_names(self):
         class Mixin(object):
@@ -2123,6 +2138,53 @@ class DeclaredAttrTest(DeclarativeTestBase, testing.AssertsCompiledSQL):
             "HAVING (SELECT count(address.id) AS "
             'count_1 FROM address WHERE address.user_id = "user".id) '
             "> :param_1",
+        )
+
+    def test_multilevel_mixin_attr_refers_to_column_copies(self):
+        """test #8190.
+
+        This test is the same idea as test_mixin_attr_refers_to_column_copies
+        but tests the column copies from superclasses.
+
+        """
+        counter = mock.Mock()
+
+        class SomeOtherMixin:
+            status = Column(String)
+
+        class HasAddressCount(SomeOtherMixin):
+            id = Column(Integer, primary_key=True)
+
+            @declared_attr
+            def address_count(cls):
+                counter(cls.id)
+                counter(cls.status)
+                return column_property(
+                    select(func.count(Address.id))
+                    .where(Address.user_id == cls.id)
+                    .where(cls.status == "some status")
+                    .scalar_subquery()
+                )
+
+        class Address(Base):
+            __tablename__ = "address"
+            id = Column(Integer, primary_key=True)
+            user_id = Column(ForeignKey("user.id"))
+
+        class User(Base, HasAddressCount):
+            __tablename__ = "user"
+
+        eq_(counter.mock_calls, [mock.call(User.id), mock.call(User.status)])
+
+        sess = fixture_session()
+        self.assert_compile(
+            sess.query(User).having(User.address_count > 5),
+            "SELECT (SELECT count(address.id) AS count_1 FROM address "
+            'WHERE address.user_id = "user".id AND "user".status = :param_1) '
+            'AS anon_1, "user".status AS user_status, "user".id AS user_id '
+            'FROM "user" HAVING (SELECT count(address.id) AS count_1 '
+            'FROM address WHERE address.user_id = "user".id '
+            'AND "user".status = :param_1) > :param_2',
         )
 
 

@@ -142,7 +142,7 @@ def _dynamic_class_hook(ctx: DynamicClassDefContext) -> None:
         )
         info.bases = [Instance(cls_arg.node, [])]
     else:
-        obj = ctx.api.named_type("__builtins__.object")
+        obj = ctx.api.named_type(names.NAMED_TYPE_BUILTINS_OBJECT)
 
         info.bases = [obj]
 
@@ -152,7 +152,7 @@ def _dynamic_class_hook(ctx: DynamicClassDefContext) -> None:
         util.fail(
             ctx.api, "Not able to calculate MRO for declarative base", ctx.call
         )
-        obj = ctx.api.named_type("__builtins__.object")
+        obj = ctx.api.named_type(names.NAMED_TYPE_BUILTINS_OBJECT)
         info.bases = [obj]
         info.fallback_to_any = True
 
@@ -184,10 +184,13 @@ def _fill_in_decorators(ctx: ClassDefContext) -> None:
         else:
             continue
 
-        assert isinstance(target.expr, NameExpr)
-        sym = ctx.api.lookup_qualified(
-            target.expr.name, target, suppress_errors=True
-        )
+        if isinstance(target.expr, NameExpr):
+            sym = ctx.api.lookup_qualified(
+                target.expr.name, target, suppress_errors=True
+            )
+        else:
+            continue
+
         if sym and sym.node:
             sym_type = get_proper_type(sym.type)
             if isinstance(sym_type, Instance):

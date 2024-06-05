@@ -444,6 +444,7 @@ class CTETest(fixtures.TestBase, AssertsCompiledSQL):
         cte = s1.cte(name="cte", recursive=True)
 
         bar = select(cte).cte("bar").alias("cs1")
+
         cte = cte.union_all(select(cte.c.x + 1).where(cte.c.x < 10)).alias(
             "cs2"
         )
@@ -485,20 +486,38 @@ class CTETest(fixtures.TestBase, AssertsCompiledSQL):
             "SELECT cs1.x, cs2.x AS x_1 FROM bar AS cs1, cte AS cs2",
         )
 
-    def test_conflicting_names(self):
+    @testing.combinations(True, False, argnames="identical")
+    @testing.combinations(True, False, argnames="use_clone")
+    def test_conflicting_names(self, identical, use_clone):
         """test a flat out name conflict."""
 
         s1 = select(1)
         c1 = s1.cte(name="cte1", recursive=True)
-        s2 = select(1)
-        c2 = s2.cte(name="cte1", recursive=True)
+        if use_clone:
+            c2 = c1._clone()
+            if not identical:
+                c2 = c2.union(select(2))
+        else:
+            if identical:
+                s2 = select(1)
+            else:
+                s2 = select(column("q"))
+            c2 = s2.cte(name="cte1", recursive=True)
 
         s = select(c1, c2)
-        assert_raises_message(
-            CompileError,
-            "Multiple, unrelated CTEs found " "with the same name: 'cte1'",
-            s.compile,
-        )
+
+        if use_clone and identical:
+            self.assert_compile(
+                s,
+                'WITH RECURSIVE cte1("1") AS (SELECT 1) SELECT cte1.1, '
+                'cte1.1 AS "1_1" FROM cte1',
+            )
+        else:
+            assert_raises_message(
+                CompileError,
+                "Multiple, unrelated CTEs found " "with the same name: 'cte1'",
+                s.compile,
+            )
 
     def test_with_recursive_no_name_currently_buggy(self):
         s1 = select(1)
@@ -549,6 +568,54 @@ class CTETest(fixtures.TestBase, AssertsCompiledSQL):
             "JOIN cte ON cte.id = employee.id) "
             "SELECT cte.id, cte.manager_id, cte.id_1 FROM cte",
         )
+
+    @testing.combinations(True, False, argnames="use_object")
+    @testing.combinations("order_by", "group_by", argnames="order_by")
+    def test_order_by_group_by_label_w_scalar_subquery(
+        self, use_object, order_by
+    ):
+        """test issue #7269"""
+        t = table("test", column("a"))
+
+        b = t.c.a.label("b")
+
+        if use_object:
+            arg = b
+        else:
+            arg = "b"
+
+        if order_by == "order_by":
+            cte = select(b).order_by(arg).cte()
+        elif order_by == "group_by":
+            cte = select(b).group_by(arg).cte()
+        else:
+            assert False
+
+        stmt = select(select(cte.c.b).label("c"))
+
+        if use_object and order_by == "group_by":
+            # group_by(b) is de-references the label, due a difference in
+            # handling between coercions.GroupByImpl and coercions.OrderByImpl.
+            # "order by" makes use of the ClauseElement._order_by_label_element
+            # feature but group_by() doesn't.  it's not clear if group_by()
+            # could do the same thing order_by() does.
+            self.assert_compile(
+                stmt,
+                "WITH anon_1 AS "
+                "(SELECT test.a AS b FROM test GROUP BY test.a) "
+                "SELECT (SELECT anon_1.b FROM anon_1) AS c",
+            )
+        else:
+            self.assert_compile(
+                stmt,
+                "WITH anon_1 AS (SELECT test.a AS b FROM test %s b) "
+                "SELECT (SELECT anon_1.b FROM anon_1) AS c"
+                % ("ORDER BY" if order_by == "order_by" else "GROUP BY")
+                # prior to the fix, the use_object version came out as:
+                # "WITH anon_1 AS (SELECT test.a AS b FROM test "
+                # "ORDER BY test.a) "
+                # "SELECT (SELECT anon_1.b FROM anon_1) AS c"
+            )
 
     def test_wrecur_dupe_col_names_w_grouping(self):
         """test #6710
@@ -633,8 +700,8 @@ class CTETest(fixtures.TestBase, AssertsCompiledSQL):
             "WITH RECURSIVE anon_1(foo_id, foo_bar_id, foo_bar_id_1) AS "
             "(SELECT foo.id AS foo_id, foo.bar_id AS foo_bar_id, "
             "foo_bar.id AS foo_bar_id_1, foo.bar_id AS foo_bar_id__1, "
-            "foo.id AS foo_id__1, foo.bar_id AS foo_bar_id__1, "
-            "foo_bar.id AS foo_bar_id__2, foo_bar.id AS foo_bar_id__2 "
+            "foo.id AS foo_id__1, foo.bar_id AS foo_bar_id__2, "
+            "foo_bar.id AS foo_bar_id__3, foo_bar.id AS foo_bar_id__4 "
             "FROM foo, foo_bar) "
             "SELECT anon_1.foo_id, anon_1.foo_bar_id, anon_1.foo_bar_id_1, "
             "anon_1.foo_bar_id AS foo_bar_id_2, anon_1.foo_id AS foo_id_1, "
@@ -1564,6 +1631,72 @@ class CTETest(fixtures.TestBase, AssertsCompiledSQL):
             },
         )
 
+    def test_textual_select_uses_independent_cte_one(self):
+        """test #7760"""
+        products = table("products", column("id"), column("price"))
+
+        upd_cte = (
+            products.update().values(price=10).where(products.c.price > 50)
+        ).cte()
+
+        stmt = (
+            text(
+                "SELECT products.id, products.price "
+                "FROM products WHERE products.price < :price_2"
+            )
+            .columns(products.c.id, products.c.price)
+            .bindparams(price_2=45)
+            .add_cte(upd_cte)
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH anon_1 AS (UPDATE products SET price=:param_1 "
+            "WHERE products.price > :price_1) "
+            "SELECT products.id, products.price "
+            "FROM products WHERE products.price < :price_2",
+            checkparams={"param_1": 10, "price_1": 50, "price_2": 45},
+        )
+
+    def test_textual_select_uses_independent_cte_two(self):
+
+        foo = table("foo", column("id"))
+        bar = table("bar", column("id"), column("attr"), column("foo_id"))
+        s1 = select(foo.c.id)
+        s2 = text(
+            "SELECT bar.id, bar.attr FROM bar "
+            "WHERE bar.foo_id IN (SELECT id FROM baz)"
+        ).columns(bar.c.id, bar.c.attr)
+        s3 = s2.add_cte(s1.cte(name="baz"))
+
+        self.assert_compile(
+            s3,
+            "WITH baz AS (SELECT foo.id AS id FROM foo) "
+            "SELECT bar.id, bar.attr FROM bar WHERE bar.foo_id IN "
+            "(SELECT id FROM baz)",
+        )
+
+    def test_textual_select_stack_correction(self):
+        """test #7798 , regression from #7760"""
+
+        foo = table("foo", column("id"))
+        bar = table("bar", column("id"), column("attr"), column("foo_id"))
+
+        s1 = text("SELECT id FROM foo").columns(foo.c.id)
+        s2 = text(
+            "SELECT bar.id, bar.attr FROM bar WHERE br.id IN "
+            "(SELECT id FROM baz)"
+        ).columns(bar.c.id, bar.c.attr)
+        s3 = bar.insert().from_select(list(s2.selected_columns), s2)
+        s4 = s3.add_cte(s1.cte(name="baz"))
+
+        self.assert_compile(
+            s4,
+            "WITH baz AS (SELECT id FROM foo) INSERT INTO bar (id, attr) "
+            "SELECT bar.id, bar.attr FROM bar WHERE br.id IN "
+            "(SELECT id FROM baz)",
+        )
+
     def test_insert_uses_independent_cte(self):
         products = table("products", column("id"), column("price"))
 
@@ -1581,6 +1714,29 @@ class CTETest(fixtures.TestBase, AssertsCompiledSQL):
             "WHERE products.price > :price_1) "
             "INSERT INTO products (id, price) VALUES (:id, :price)",
             checkparams={"id": 1, "price": 20, "param_1": 10, "price_1": 50},
+        )
+
+    def test_insert_from_select_uses_independent_cte(self):
+        """test #7036"""
+
+        t1 = table("table1", column("id1"), column("a"))
+
+        t2 = table("table2", column("id2"), column("b"))
+
+        ins1 = t1.insert().from_select(["id1", "a"], select(1, text("'a'")))
+
+        cte1 = ins1.cte("cte1")
+
+        ins2 = t2.insert().from_select(["id2", "b"], select(2, text("'b'")))
+
+        ins2 = ins2.add_cte(cte1)
+
+        self.assert_compile(
+            ins2,
+            "WITH cte1 AS "
+            "(INSERT INTO table1 (id1, a) SELECT 1, 'a') "
+            "INSERT INTO table2 (id2, b) SELECT 2, 'b'",
+            checkparams={},
         )
 
     def test_update_uses_independent_cte(self):
@@ -1695,4 +1851,815 @@ class CTETest(fixtures.TestBase, AssertsCompiledSQL):
             CTE,
             a_stmt,
             "foo",
+        )
+
+    def test_recursive_cte_with_multiple_union(self):
+        root_query = select(literal(1).label("val")).cte(
+            "increasing", recursive=True
+        )
+        rec_part_1 = select((root_query.c.val + 3).label("val")).where(
+            root_query.c.val < 15
+        )
+        rec_part_2 = select((root_query.c.val + 5).label("val")).where(
+            root_query.c.val < 15
+        )
+        union_rec_query = root_query.union(rec_part_1, rec_part_2)
+        union_stmt = select(union_rec_query)
+        self.assert_compile(
+            union_stmt,
+            "WITH RECURSIVE increasing(val) AS "
+            "(SELECT :param_1 AS val "
+            "UNION SELECT increasing.val + :val_1 AS val FROM increasing "
+            "WHERE increasing.val < :val_2 "
+            "UNION SELECT increasing.val + :val_3 AS val FROM increasing "
+            "WHERE increasing.val < :val_4) "
+            "SELECT increasing.val FROM increasing",
+        )
+
+    def test_recursive_cte_with_multiple_union_all(self):
+        root_query = select(literal(1).label("val")).cte(
+            "increasing", recursive=True
+        )
+        rec_part_1 = select((root_query.c.val + 3).label("val")).where(
+            root_query.c.val < 15
+        )
+        rec_part_2 = select((root_query.c.val + 5).label("val")).where(
+            root_query.c.val < 15
+        )
+
+        union_all_rec_query = root_query.union_all(rec_part_1, rec_part_2)
+        union_all_stmt = select(union_all_rec_query)
+        self.assert_compile(
+            union_all_stmt,
+            "WITH RECURSIVE increasing(val) AS "
+            "(SELECT :param_1 AS val "
+            "UNION ALL SELECT increasing.val + :val_1 AS val FROM increasing "
+            "WHERE increasing.val < :val_2 "
+            "UNION ALL SELECT increasing.val + :val_3 AS val FROM increasing "
+            "WHERE increasing.val < :val_4) "
+            "SELECT increasing.val FROM increasing",
+        )
+
+
+class NestingCTETest(fixtures.TestBase, AssertsCompiledSQL):
+
+    __dialect__ = "default_enhanced"
+
+    def test_select_with_nesting_cte_in_cte(self):
+        nesting_cte = select(literal(1).label("inner_cte")).cte(
+            "nesting", nesting=True
+        )
+        stmt = select(
+            select(nesting_cte.c.inner_cte.label("outer_cte")).cte("cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH cte AS (WITH nesting AS (SELECT :param_1 AS inner_cte) "
+            "SELECT nesting.inner_cte AS outer_cte FROM nesting) "
+            "SELECT cte.outer_cte FROM cte",
+        )
+
+    def test_select_with_aliased_nesting_cte_in_cte(self):
+        nesting_cte = (
+            select(literal(1).label("inner_cte"))
+            .cte("nesting", nesting=True)
+            .alias("aliased_nested")
+        )
+        stmt = select(
+            select(nesting_cte.c.inner_cte.label("outer_cte")).cte("cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH cte AS (WITH nesting AS (SELECT :param_1 AS inner_cte) "
+            "SELECT aliased_nested.inner_cte AS outer_cte "
+            "FROM nesting AS aliased_nested) "
+            "SELECT cte.outer_cte FROM cte",
+        )
+
+    def test_nesting_cte_in_cte_with_same_name(self):
+        nesting_cte = select(literal(1).label("inner_cte")).cte(
+            "some_cte", nesting=True
+        )
+        stmt = select(
+            select(nesting_cte.c.inner_cte.label("outer_cte")).cte("some_cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH some_cte AS (WITH some_cte AS "
+            "(SELECT :param_1 AS inner_cte) "
+            "SELECT some_cte.inner_cte AS outer_cte "
+            "FROM some_cte) "
+            "SELECT some_cte.outer_cte FROM some_cte",
+        )
+
+    def test_nesting_cte_at_top_level(self):
+        nesting_cte = select(literal(1).label("val")).cte(
+            "nesting_cte", nesting=True
+        )
+        cte = select(literal(2).label("val")).cte("cte")
+        stmt = select(nesting_cte.c.val, cte.c.val)
+
+        self.assert_compile(
+            stmt,
+            "WITH nesting_cte AS (SELECT :param_1 AS val)"
+            ", cte AS (SELECT :param_2 AS val)"
+            " SELECT nesting_cte.val, cte.val AS val_1 FROM nesting_cte, cte",
+        )
+
+    def test_double_nesting_cte_in_cte(self):
+        """
+        Validate that the SELECT in the 2nd nesting CTE does not render
+        the 1st CTE.
+
+        It implies that nesting CTE level is taken in account.
+        """
+        select_1_cte = select(literal(1).label("inner_cte")).cte(
+            "nesting_1", nesting=True
+        )
+        select_2_cte = select(literal(2).label("inner_cte")).cte(
+            "nesting_2", nesting=True
+        )
+
+        stmt = select(
+            select(
+                select_1_cte.c.inner_cte.label("outer_1"),
+                select_2_cte.c.inner_cte.label("outer_2"),
+            ).cte("cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH cte AS ("
+            "WITH nesting_1 AS (SELECT :param_1 AS inner_cte)"
+            ", nesting_2 AS (SELECT :param_2 AS inner_cte)"
+            " SELECT nesting_1.inner_cte AS outer_1"
+            ", nesting_2.inner_cte AS outer_2"
+            " FROM nesting_1, nesting_2"
+            ") SELECT cte.outer_1, cte.outer_2 FROM cte",
+        )
+
+    def test_double_nesting_cte_with_cross_reference_in_cte(self):
+        select_1_cte = select(literal(1).label("inner_cte_1")).cte(
+            "nesting_1", nesting=True
+        )
+        select_2_cte = select(
+            (select_1_cte.c.inner_cte_1 + 1).label("inner_cte_2")
+        ).cte("nesting_2", nesting=True)
+
+        # 1 next 2
+
+        nesting_cte_1_2 = select(select_1_cte, select_2_cte).cte("cte")
+        stmt_1_2 = select(nesting_cte_1_2)
+        self.assert_compile(
+            stmt_1_2,
+            "WITH cte AS ("
+            "WITH nesting_1 AS (SELECT :param_1 AS inner_cte_1)"
+            ", nesting_2 AS (SELECT nesting_1.inner_cte_1 + :inner_cte_1_1"
+            " AS inner_cte_2 FROM nesting_1)"
+            " SELECT nesting_1.inner_cte_1 AS inner_cte_1"
+            ", nesting_2.inner_cte_2 AS inner_cte_2"
+            " FROM nesting_1, nesting_2"
+            ") SELECT cte.inner_cte_1, cte.inner_cte_2 FROM cte",
+        )
+
+        # 2 next 1
+
+        # Reorganize order with add_cte
+        nesting_cte_2_1 = (
+            select(select_2_cte, select_1_cte).add_cte(select_1_cte).cte("cte")
+        )
+        stmt_2_1 = select(nesting_cte_2_1)
+        self.assert_compile(
+            stmt_2_1,
+            "WITH cte AS ("
+            "WITH nesting_1 AS (SELECT :param_1 AS inner_cte_1)"
+            ", nesting_2 AS (SELECT nesting_1.inner_cte_1 + :inner_cte_1_1"
+            " AS inner_cte_2 FROM nesting_1)"
+            " SELECT nesting_2.inner_cte_2 AS inner_cte_2"
+            ", nesting_1.inner_cte_1 AS inner_cte_1"
+            " FROM nesting_2, nesting_1"
+            ") SELECT cte.inner_cte_2, cte.inner_cte_1 FROM cte",
+        )
+
+    def test_nesting_cte_in_nesting_cte_in_cte(self):
+        select_1_cte = select(literal(1).label("inner_cte")).cte(
+            "nesting_1", nesting=True
+        )
+        select_2_cte = select(select_1_cte.c.inner_cte.label("inner_2")).cte(
+            "nesting_2", nesting=True
+        )
+
+        stmt = select(
+            select(select_2_cte.c.inner_2.label("outer_cte")).cte("cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH cte AS ("
+            "WITH nesting_2 AS ("
+            "WITH nesting_1 AS (SELECT :param_1 AS inner_cte)"
+            " SELECT nesting_1.inner_cte AS inner_2 FROM nesting_1"
+            ") SELECT nesting_2.inner_2 AS outer_cte FROM nesting_2"
+            ") SELECT cte.outer_cte FROM cte",
+        )
+
+    def test_compound_select_with_nesting_cte_in_cte(self):
+        select_1_cte = select(literal(1).label("inner_cte")).cte(
+            "nesting_1", nesting=True
+        )
+        select_2_cte = select(literal(2).label("inner_cte")).cte(
+            "nesting_2", nesting=True
+        )
+
+        nesting_cte = (
+            select(select_1_cte).union(select(select_2_cte)).subquery()
+        )
+
+        stmt = select(
+            select(nesting_cte.c.inner_cte.label("outer_cte")).cte("cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH cte AS ("
+            "SELECT anon_1.inner_cte AS outer_cte FROM ("
+            "WITH nesting_1 AS (SELECT :param_1 AS inner_cte)"
+            ", nesting_2 AS (SELECT :param_2 AS inner_cte)"
+            " SELECT nesting_1.inner_cte AS inner_cte FROM nesting_1"
+            " UNION"
+            " SELECT nesting_2.inner_cte AS inner_cte FROM nesting_2"
+            ") AS anon_1"
+            ") SELECT cte.outer_cte FROM cte",
+        )
+
+    @testing.fixture
+    def nesting_cte_in_recursive_cte(self):
+        nesting_cte = select(literal(1).label("inner_cte")).cte(
+            "nesting", nesting=True
+        )
+
+        rec_cte = select(nesting_cte.c.inner_cte.label("outer_cte")).cte(
+            "rec_cte", recursive=True
+        )
+        rec_part = select(rec_cte.c.outer_cte).where(
+            rec_cte.c.outer_cte == literal(42)
+        )
+        rec_cte = rec_cte.union(rec_part)
+
+        stmt = select(rec_cte)
+        return stmt
+
+    def test_nesting_cte_in_recursive_cte_positional(
+        self, nesting_cte_in_recursive_cte
+    ):
+
+        self.assert_compile(
+            nesting_cte_in_recursive_cte,
+            "WITH RECURSIVE rec_cte(outer_cte) AS (WITH nesting AS "
+            "(SELECT ? AS inner_cte) "
+            "SELECT nesting.inner_cte AS outer_cte FROM nesting UNION "
+            "SELECT rec_cte.outer_cte AS outer_cte FROM rec_cte "
+            "WHERE rec_cte.outer_cte = ?) "
+            "SELECT rec_cte.outer_cte FROM rec_cte",
+            checkpositional=(1, 42),
+            dialect="default_qmark",
+        )
+
+    def test_nesting_cte_in_recursive_cte(self, nesting_cte_in_recursive_cte):
+        self.assert_compile(
+            nesting_cte_in_recursive_cte,
+            "WITH RECURSIVE rec_cte(outer_cte) AS (WITH nesting AS "
+            "(SELECT :param_1 AS inner_cte) "
+            "SELECT nesting.inner_cte AS outer_cte FROM nesting UNION "
+            "SELECT rec_cte.outer_cte AS outer_cte FROM rec_cte "
+            "WHERE rec_cte.outer_cte = :param_2) "
+            "SELECT rec_cte.outer_cte FROM rec_cte",
+            checkparams={"param_1": 1, "param_2": 42},
+        )
+
+    @testing.fixture
+    def nesting_cte_in_recursive_cte_w_add_cte(self):
+        nesting_cte = select(literal(1).label("inner_cte")).cte(
+            "nesting", nesting=True
+        )
+
+        rec_cte = select(nesting_cte.c.inner_cte.label("outer_cte")).cte(
+            "rec_cte", recursive=True
+        )
+        rec_part = select(rec_cte.c.outer_cte).where(
+            rec_cte.c.outer_cte == literal(42)
+        )
+        rec_cte = rec_cte.union(rec_part)
+
+        stmt = select(rec_cte)
+        return stmt
+
+    def test_nesting_cte_in_recursive_cte_w_add_cte_positional(
+        self, nesting_cte_in_recursive_cte_w_add_cte
+    ):
+        self.assert_compile(
+            nesting_cte_in_recursive_cte_w_add_cte,
+            "WITH RECURSIVE rec_cte(outer_cte) AS (WITH nesting AS "
+            "(SELECT ? AS inner_cte) "
+            "SELECT nesting.inner_cte AS outer_cte FROM nesting UNION "
+            "SELECT rec_cte.outer_cte AS outer_cte FROM rec_cte "
+            "WHERE rec_cte.outer_cte = ?) "
+            "SELECT rec_cte.outer_cte FROM rec_cte",
+            checkpositional=(1, 42),
+            dialect="default_qmark",
+        )
+
+    def test_nesting_cte_in_recursive_cte_w_add_cte(
+        self, nesting_cte_in_recursive_cte_w_add_cte
+    ):
+        self.assert_compile(
+            nesting_cte_in_recursive_cte_w_add_cte,
+            "WITH RECURSIVE rec_cte(outer_cte) AS (WITH nesting AS "
+            "(SELECT :param_1 AS inner_cte) "
+            "SELECT nesting.inner_cte AS outer_cte FROM nesting UNION "
+            "SELECT rec_cte.outer_cte AS outer_cte FROM rec_cte "
+            "WHERE rec_cte.outer_cte = :param_2) "
+            "SELECT rec_cte.outer_cte FROM rec_cte",
+            checkparams={"param_1": 1, "param_2": 42},
+        )
+
+    def test_recursive_nesting_cte_in_cte(self):
+        rec_root = select(literal(1).label("inner_cte")).cte(
+            "nesting", recursive=True, nesting=True
+        )
+        rec_part = select(rec_root.c.inner_cte).where(
+            rec_root.c.inner_cte == literal(1)
+        )
+        nesting_cte = rec_root.union(rec_part)
+
+        stmt = select(
+            select(nesting_cte.c.inner_cte.label("outer_cte")).cte("cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH cte AS (WITH RECURSIVE nesting(inner_cte) AS "
+            "(SELECT :param_1 AS inner_cte UNION "
+            "SELECT nesting.inner_cte AS inner_cte FROM nesting "
+            "WHERE nesting.inner_cte = :param_2) "
+            "SELECT nesting.inner_cte AS outer_cte FROM nesting) "
+            "SELECT cte.outer_cte FROM cte",
+        )
+
+    def test_anon_recursive_nesting_cte_in_cte(self):
+        rec_root = (
+            select(literal(1).label("inner_cte"))
+            .cte("nesting", recursive=True, nesting=True)
+            .alias()
+        )
+        rec_part = select(rec_root.c.inner_cte).where(
+            rec_root.c.inner_cte == literal(1)
+        )
+        nesting_cte = rec_root.union(rec_part)
+
+        stmt = select(
+            select(nesting_cte.c.inner_cte.label("outer_cte")).cte("cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH cte AS (WITH RECURSIVE anon_1(inner_cte) AS "
+            "(SELECT :param_1 AS inner_cte UNION "
+            "SELECT anon_1.inner_cte AS inner_cte FROM anon_1 "
+            "WHERE anon_1.inner_cte = :param_2) "
+            "SELECT anon_1.inner_cte AS outer_cte FROM anon_1) "
+            "SELECT cte.outer_cte FROM cte",
+        )
+
+    def test_fully_aliased_recursive_nesting_cte_in_cte(self):
+        rec_root = (
+            select(literal(1).label("inner_cte"))
+            .cte("nesting", recursive=True, nesting=True)
+            .alias("aliased_nesting")
+        )
+        rec_part = select(rec_root.c.inner_cte).where(
+            rec_root.c.inner_cte == literal(1)
+        )
+        nesting_cte = rec_root.union(rec_part)
+
+        stmt = select(
+            select(nesting_cte.c.inner_cte.label("outer_cte")).cte("cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH cte AS (WITH RECURSIVE aliased_nesting(inner_cte) AS "
+            "(SELECT :param_1 AS inner_cte UNION "
+            "SELECT aliased_nesting.inner_cte AS inner_cte "
+            "FROM aliased_nesting "
+            "WHERE aliased_nesting.inner_cte = :param_2) "
+            "SELECT aliased_nesting.inner_cte AS outer_cte "
+            "FROM aliased_nesting) "
+            "SELECT cte.outer_cte FROM cte",
+        )
+
+    def test_aliased_recursive_nesting_cte_in_cte(self):
+        rec_root = select(literal(1).label("inner_cte")).cte(
+            "nesting", recursive=True, nesting=True
+        )
+        rec_part = select(rec_root.c.inner_cte).where(
+            rec_root.c.inner_cte == literal(1)
+        )
+        nesting_cte = rec_root.union(rec_part).alias("aliased_nesting")
+
+        stmt = select(
+            select(nesting_cte.c.inner_cte.label("outer_cte")).cte("cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH cte AS (WITH RECURSIVE nesting(inner_cte) AS "
+            "(SELECT :param_1 AS inner_cte UNION "
+            "SELECT nesting.inner_cte AS inner_cte FROM nesting "
+            "WHERE nesting.inner_cte = :param_2) "
+            "SELECT aliased_nesting.inner_cte AS outer_cte "
+            "FROM nesting AS aliased_nesting) "
+            "SELECT cte.outer_cte FROM cte",
+        )
+
+    @testing.fixture
+    def same_nested_cte_is_not_generated_twice(self):
+        # Same = name and query
+        nesting_cte_used_twice = select(literal(1).label("inner_cte_1")).cte(
+            "nesting_cte", nesting=True
+        )
+        select_add_cte = select(
+            (nesting_cte_used_twice.c.inner_cte_1 + 2).label("next_value")
+        ).cte("nesting_2", nesting=True)
+
+        union_cte = (
+            select(
+                (nesting_cte_used_twice.c.inner_cte_1 - 3).label("next_value")
+            )
+            .union(select(select_add_cte))
+            .cte("wrapper", nesting=True)
+        )
+
+        stmt = (
+            select(union_cte)
+            .add_cte(nesting_cte_used_twice)
+            .union(select(nesting_cte_used_twice))
+        )
+        return stmt
+
+    def test_same_nested_cte_is_not_generated_twice_positional(
+        self, same_nested_cte_is_not_generated_twice
+    ):
+        self.assert_compile(
+            same_nested_cte_is_not_generated_twice,
+            "WITH nesting_cte AS "
+            "(SELECT ? AS inner_cte_1)"
+            ", wrapper AS "
+            "(WITH nesting_2 AS "
+            "(SELECT nesting_cte.inner_cte_1 + ? "
+            "AS next_value "
+            "FROM nesting_cte)"
+            " SELECT nesting_cte.inner_cte_1 - ? "
+            "AS next_value "
+            "FROM nesting_cte UNION SELECT nesting_2.next_value "
+            "AS next_value FROM nesting_2)"
+            " SELECT wrapper.next_value "
+            "FROM wrapper UNION SELECT nesting_cte.inner_cte_1 "
+            "FROM nesting_cte",
+            checkpositional=(1, 2, 3),
+            dialect="default_qmark",
+        )
+
+    def test_same_nested_cte_is_not_generated_twice(
+        self, same_nested_cte_is_not_generated_twice
+    ):
+        self.assert_compile(
+            same_nested_cte_is_not_generated_twice,
+            "WITH nesting_cte AS "
+            "(SELECT :param_1 AS inner_cte_1)"
+            ", wrapper AS "
+            "(WITH nesting_2 AS "
+            "(SELECT nesting_cte.inner_cte_1 + :inner_cte_1_2 "
+            "AS next_value "
+            "FROM nesting_cte)"
+            " SELECT nesting_cte.inner_cte_1 - :inner_cte_1_1 "
+            "AS next_value "
+            "FROM nesting_cte UNION SELECT nesting_2.next_value "
+            "AS next_value FROM nesting_2)"
+            " SELECT wrapper.next_value "
+            "FROM wrapper UNION SELECT nesting_cte.inner_cte_1 "
+            "FROM nesting_cte",
+            checkparams={
+                "param_1": 1,
+                "inner_cte_1_2": 2,
+                "inner_cte_1_1": 3,
+            },
+        )
+
+    @testing.fixture
+    def recursive_nesting_cte_in_recursive_cte(self):
+        nesting_cte = select(literal(1).label("inner_cte")).cte(
+            "nesting", nesting=True, recursive=True
+        )
+        nesting_rec_part = select(nesting_cte.c.inner_cte).where(
+            nesting_cte.c.inner_cte == literal(2)
+        )
+        nesting_cte = nesting_cte.union(nesting_rec_part)
+
+        rec_cte = select(nesting_cte.c.inner_cte.label("outer_cte")).cte(
+            "rec_cte", recursive=True
+        )
+        rec_part = select(rec_cte.c.outer_cte).where(
+            rec_cte.c.outer_cte == literal(3)
+        )
+        rec_cte = rec_cte.union(rec_part)
+
+        stmt = select(rec_cte)
+        return stmt
+
+    def test_recursive_nesting_cte_in_recursive_cte_positional(
+        self, recursive_nesting_cte_in_recursive_cte
+    ):
+
+        self.assert_compile(
+            recursive_nesting_cte_in_recursive_cte,
+            "WITH RECURSIVE rec_cte(outer_cte) AS ("
+            "WITH RECURSIVE nesting(inner_cte) AS "
+            "(SELECT ? AS inner_cte UNION "
+            "SELECT nesting.inner_cte AS inner_cte FROM nesting "
+            "WHERE nesting.inner_cte = ?) "
+            "SELECT nesting.inner_cte AS outer_cte FROM nesting UNION "
+            "SELECT rec_cte.outer_cte AS outer_cte FROM rec_cte "
+            "WHERE rec_cte.outer_cte = ?) "
+            "SELECT rec_cte.outer_cte FROM rec_cte",
+            checkpositional=(1, 2, 3),
+            dialect="default_qmark",
+        )
+
+    def test_recursive_nesting_cte_in_recursive_cte(
+        self, recursive_nesting_cte_in_recursive_cte
+    ):
+        self.assert_compile(
+            recursive_nesting_cte_in_recursive_cte,
+            "WITH RECURSIVE rec_cte(outer_cte) AS ("
+            "WITH RECURSIVE nesting(inner_cte) AS "
+            "(SELECT :param_1 AS inner_cte UNION "
+            "SELECT nesting.inner_cte AS inner_cte FROM nesting "
+            "WHERE nesting.inner_cte = :param_2) "
+            "SELECT nesting.inner_cte AS outer_cte FROM nesting UNION "
+            "SELECT rec_cte.outer_cte AS outer_cte FROM rec_cte "
+            "WHERE rec_cte.outer_cte = :param_3) "
+            "SELECT rec_cte.outer_cte FROM rec_cte",
+            checkparams={"param_1": 1, "param_2": 2, "param_3": 3},
+        )
+
+    def test_select_from_insert_cte_with_nesting(self):
+        products = table("products", column("id"), column("price"))
+
+        generator_cte = select(
+            literal(1).label("id"), literal(27.0).label("price")
+        ).cte("generator", nesting=True)
+
+        cte = (
+            products.insert()
+            .from_select(
+                [products.c.id, products.c.price],
+                select(generator_cte),
+            )
+            .returning(*products.c)
+            .cte("insert_cte")
+        )
+
+        stmt = select(cte)
+
+        assert "autocommit" not in stmt._execution_options
+
+        eq_(stmt.compile().execution_options["autocommit"], True)
+
+        self.assert_compile(
+            stmt,
+            "WITH insert_cte AS "
+            "(WITH generator AS "
+            "(SELECT :param_1 AS id, :param_2 AS price) "
+            "INSERT INTO products (id, price) "
+            "SELECT generator.id AS id, generator.price "
+            "AS price FROM generator "
+            "RETURNING products.id, products.price) "
+            "SELECT insert_cte.id, insert_cte.price "
+            "FROM insert_cte",
+        )
+        eq_(stmt.compile().isinsert, False)
+
+    def test_select_from_update_cte_with_nesting(self):
+        t1 = table("table_1", column("id"), column("price"))
+
+        generator_cte = select(
+            literal(1).label("id"), literal(27.0).label("price")
+        ).cte("generator", nesting=True)
+
+        cte = (
+            t1.update()
+            .values(price=generator_cte.c.price)
+            .where(t1.c.id == generator_cte.c.id)
+            .returning(t1.c.id, t1.c.price)
+        ).cte("update_cte")
+
+        qry = select(cte)
+
+        self.assert_compile(
+            qry,
+            "WITH update_cte AS "
+            "(WITH generator AS "
+            "(SELECT :param_1 AS id, :param_2 AS price) "
+            "UPDATE table_1 SET price=generator.price "
+            "FROM generator WHERE table_1.id = generator.id "
+            "RETURNING table_1.id, table_1.price) "
+            "SELECT update_cte.id, update_cte.price FROM update_cte",
+        )
+
+    def test_select_from_delete_cte_with_nesting(self):
+        t1 = table("table_1", column("id"), column("price"))
+
+        generator_cte = select(literal(1).label("id")).cte(
+            "generator", nesting=True
+        )
+
+        dlt = (
+            t1.delete()
+            .where(t1.c.id == generator_cte.c.id)
+            .returning(t1.c.id, t1.c.price)
+        )
+
+        cte = dlt.cte("delete_cte")
+
+        qry = select(cte)
+
+        self.assert_compile(
+            qry,
+            "WITH delete_cte AS "
+            "(WITH generator AS "
+            "(SELECT %(param_1)s AS id) "
+            "DELETE FROM table_1 USING generator "
+            "WHERE table_1.id = generator.id RETURNING table_1.id, "
+            "table_1.price) SELECT delete_cte.id, delete_cte.price "
+            "FROM delete_cte",
+            dialect="postgresql",
+        )
+
+    def test_compound_select_with_nesting_cte_in_custom_order(self):
+        select_1_cte = select(literal(1).label("inner_cte")).cte(
+            "nesting_1", nesting=True
+        )
+        select_2_cte = select(literal(2).label("inner_cte")).cte(
+            "nesting_2", nesting=True
+        )
+
+        nesting_cte = (
+            select(select_1_cte)
+            .union(select(select_2_cte))
+            # Generate "select_2_cte" first
+            .add_cte(select_2_cte)
+            .subquery()
+        )
+
+        stmt = select(
+            select(nesting_cte.c.inner_cte.label("outer_cte")).cte("cte")
+        )
+
+        self.assert_compile(
+            stmt,
+            "WITH cte AS ("
+            "SELECT anon_1.inner_cte AS outer_cte FROM ("
+            "WITH nesting_2 AS (SELECT :param_1 AS inner_cte)"
+            ", nesting_1 AS (SELECT :param_2 AS inner_cte)"
+            " SELECT nesting_1.inner_cte AS inner_cte FROM nesting_1"
+            " UNION"
+            " SELECT nesting_2.inner_cte AS inner_cte FROM nesting_2"
+            ") AS anon_1"
+            ") SELECT cte.outer_cte FROM cte",
+        )
+
+    @testing.fixture
+    def cte_in_compound_select(self):
+        upper = select(literal(1).label("z"))
+
+        lower_a_cte = select(literal(2).label("x")).cte("xx", nesting=True)
+        lower_a = select(literal(3).label("y")).add_cte(lower_a_cte)
+        lower_b = select(literal(4).label("w"))
+
+        stmt = upper.union_all(lower_a.union_all(lower_b))
+        return stmt
+
+    def test_cte_in_compound_select_positional(self, cte_in_compound_select):
+        self.assert_compile(
+            cte_in_compound_select,
+            "SELECT ? AS z UNION ALL (WITH xx AS "
+            "(SELECT ? AS x) "
+            "SELECT ? AS y UNION ALL SELECT ? AS w)",
+            checkpositional=(1, 2, 3, 4),
+            dialect="default_qmark",
+        )
+
+    def test_cte_in_compound_select(self, cte_in_compound_select):
+        self.assert_compile(
+            cte_in_compound_select,
+            "SELECT :param_1 AS z UNION ALL (WITH xx AS "
+            "(SELECT :param_2 AS x) "
+            "SELECT :param_3 AS y UNION ALL SELECT :param_4 AS w)",
+            checkparams={
+                "param_1": 1,
+                "param_2": 2,
+                "param_3": 3,
+                "param_4": 4,
+            },
+        )
+
+    @testing.fixture
+    def recursive_cte_referenced_multiple_times_with_nesting_cte(self):
+        rec_root = select(literal(1).label("the_value")).cte(
+            "recursive_cte", recursive=True
+        )
+
+        # Allow to reference the recursive CTE more than once
+        rec_root_ref = rec_root.select().cte(
+            "allow_multiple_ref", nesting=True
+        )
+        should_continue = select(
+            exists(
+                select(rec_root_ref.c.the_value)
+                .where(rec_root_ref.c.the_value < 10)
+                .limit(5)
+            ).label("val")
+        ).cte("should_continue", nesting=True)
+
+        rec_part_1 = select(rec_root_ref.c.the_value * 2).where(
+            should_continue.c.val != True
+        )
+        rec_part_2 = select(rec_root_ref.c.the_value * 3).where(
+            should_continue.c.val != True
+        )
+
+        rec_part = rec_part_1.add_cte(rec_root_ref).union_all(rec_part_2)
+
+        rec_cte = rec_root.union_all(rec_part)
+
+        stmt = rec_cte.select()
+        return stmt
+
+    def test_recursive_cte_referenced_multiple_times_with_nesting_cte_pos(
+        self, recursive_cte_referenced_multiple_times_with_nesting_cte
+    ):
+        self.assert_compile(
+            recursive_cte_referenced_multiple_times_with_nesting_cte,
+            "WITH RECURSIVE recursive_cte(the_value) AS ("
+            "SELECT ? AS the_value UNION ALL ("
+            "WITH allow_multiple_ref AS ("
+            "SELECT recursive_cte.the_value AS the_value "
+            "FROM recursive_cte)"
+            ", should_continue AS (SELECT EXISTS ("
+            "SELECT allow_multiple_ref.the_value FROM allow_multiple_ref"
+            " WHERE allow_multiple_ref.the_value < ?"
+            " LIMIT ?) AS val) "
+            "SELECT allow_multiple_ref.the_value * ? AS anon_1"
+            " FROM allow_multiple_ref, should_continue "
+            "WHERE should_continue.val != 1"
+            " UNION ALL SELECT allow_multiple_ref.the_value * ?"
+            " AS anon_2 FROM allow_multiple_ref, should_continue"
+            " WHERE should_continue.val != 1))"
+            " SELECT recursive_cte.the_value FROM recursive_cte",
+            checkpositional=(1, 10, 5, 2, 3),
+            dialect="default_qmark",
+        )
+
+    def test_recursive_cte_referenced_multiple_times_with_nesting_cte(
+        self, recursive_cte_referenced_multiple_times_with_nesting_cte
+    ):
+        self.assert_compile(
+            recursive_cte_referenced_multiple_times_with_nesting_cte,
+            "WITH RECURSIVE recursive_cte(the_value) AS ("
+            "SELECT :param_1 AS the_value UNION ALL ("
+            "WITH allow_multiple_ref AS ("
+            "SELECT recursive_cte.the_value AS the_value "
+            "FROM recursive_cte)"
+            ", should_continue AS (SELECT EXISTS ("
+            "SELECT allow_multiple_ref.the_value FROM allow_multiple_ref"
+            " WHERE allow_multiple_ref.the_value < :the_value_2"
+            " LIMIT :param_2) AS val) "
+            "SELECT allow_multiple_ref.the_value * :the_value_1 AS anon_1"
+            " FROM allow_multiple_ref, should_continue "
+            "WHERE should_continue.val != true"
+            " UNION ALL SELECT allow_multiple_ref.the_value * :the_value_3"
+            " AS anon_2 FROM allow_multiple_ref, should_continue"
+            " WHERE should_continue.val != true))"
+            " SELECT recursive_cte.the_value FROM recursive_cte",
+            checkparams={
+                "param_1": 1,
+                "param_2": 5,
+                "the_value_2": 10,
+                "the_value_1": 2,
+                "the_value_3": 3,
+            },
         )

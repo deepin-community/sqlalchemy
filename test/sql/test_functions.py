@@ -25,7 +25,6 @@ from sqlalchemy import Table
 from sqlalchemy import testing
 from sqlalchemy import Text
 from sqlalchemy import true
-from sqlalchemy import types as sqltypes
 from sqlalchemy import util
 from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import oracle
@@ -37,6 +36,7 @@ from sqlalchemy.sql import functions
 from sqlalchemy.sql import LABEL_STYLE_TABLENAME_PLUS_COL
 from sqlalchemy.sql import operators
 from sqlalchemy.sql import quoted_name
+from sqlalchemy.sql import sqltypes
 from sqlalchemy.sql import table
 from sqlalchemy.sql.compiler import BIND_TEMPLATES
 from sqlalchemy.sql.functions import FunctionElement
@@ -86,6 +86,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
 
             # test generic function compile
             class fake_func(GenericFunction):
+                inherit_cache = True
                 __return_type__ = sqltypes.Integer
 
                 def __init__(self, arg, **kwargs):
@@ -112,6 +113,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
         if use_custom:
 
             class MyFunc(FunctionElement):
+                inherit_cache = True
                 name = "myfunc"
                 type = Integer()
 
@@ -140,6 +142,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
     def test_use_labels_function_element(self):
         class max_(FunctionElement):
             name = "max"
+            inherit_cache = True
 
         @compiles(max_)
         def visit_max(element, compiler, **kw):
@@ -265,7 +268,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
 
     def test_custom_default_namespace(self):
         class myfunc(GenericFunction):
-            pass
+            inherit_cache = True
 
         assert isinstance(func.myfunc(), myfunc)
         self.assert_compile(func.myfunc(), "myfunc()")
@@ -273,6 +276,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
     def test_custom_type(self):
         class myfunc(GenericFunction):
             type = DateTime
+            inherit_cache = True
 
         assert isinstance(func.myfunc().type, DateTime)
         self.assert_compile(func.myfunc(), "myfunc()")
@@ -280,12 +284,14 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
     def test_custom_legacy_type(self):
         # in case someone was using this system
         class myfunc(GenericFunction):
+            inherit_cache = True
             __return_type__ = DateTime
 
         assert isinstance(func.myfunc().type, DateTime)
 
     def test_case_sensitive(self):
         class MYFUNC(GenericFunction):
+            inherit_cache = True
             type = DateTime
 
         assert isinstance(func.MYFUNC().type, DateTime)
@@ -341,6 +347,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
 
     def test_custom_w_custom_name(self):
         class myfunc(GenericFunction):
+            inherit_cache = True
             name = "notmyfunc"
 
         assert isinstance(func.notmyfunc(), myfunc)
@@ -348,6 +355,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
 
     def test_custom_w_quoted_name(self):
         class myfunc(GenericFunction):
+            inherit_cache = True
             name = quoted_name("NotMyFunc", quote=True)
             identifier = "myfunc"
 
@@ -355,6 +363,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
 
     def test_custom_w_quoted_name_no_identifier(self):
         class myfunc(GenericFunction):
+            inherit_cache = True
             name = quoted_name("NotMyFunc", quote=True)
 
         # note this requires that the quoted name be lower cased for
@@ -364,6 +373,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
     def test_custom_package_namespace(self):
         def cls1(pk_name):
             class myfunc(GenericFunction):
+                inherit_cache = True
                 package = pk_name
 
             return myfunc
@@ -377,6 +387,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
     def test_custom_name(self):
         class MyFunction(GenericFunction):
             name = "my_func"
+            inherit_cache = True
 
             def __init__(self, *args):
                 args = args + (3,)
@@ -392,20 +403,24 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
             package = "geo"
             name = "BufferOne"
             identifier = "buf1"
+            inherit_cache = True
 
         class GeoBuffer2(GenericFunction):
             type = Integer
             name = "BufferTwo"
             identifier = "buf2"
+            inherit_cache = True
 
         class BufferThree(GenericFunction):
             type = Integer
             identifier = "buf3"
+            inherit_cache = True
 
         class GeoBufferFour(GenericFunction):
             type = Integer
             name = "BufferFour"
             identifier = "Buf4"
+            inherit_cache = True
 
         self.assert_compile(func.geo.buf1(), "BufferOne()")
         self.assert_compile(func.buf2(), "BufferTwo()")
@@ -418,7 +433,7 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
 
     def test_custom_args(self):
         class myfunc(GenericFunction):
-            pass
+            inherit_cache = True
 
         self.assert_compile(
             myfunc(1, 2, 3), "myfunc(:myfunc_1, :myfunc_2, :myfunc_3)"
@@ -540,6 +555,31 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
         self.assert_compile(
             util.pickle.loads(util.pickle.dumps(f1)),
             "row_number() OVER ()",
+        )
+
+    def test_pickle_within_group(self):
+        """test #6520"""
+
+        # TODO: the test/sql package lacks a comprehensive pickling
+        # test suite even though there are __reduce__ methods in several
+        # places in sql/elements.py.   likely as part of
+        # test/sql/test_compare.py might be a place this can happen but
+        # this still relies upon a strategy for table metadata as we have
+        # in serializer.
+
+        f1 = func.percentile_cont(literal(1)).within_group()
+
+        self.assert_compile(
+            util.pickle.loads(util.pickle.dumps(f1)),
+            "percentile_cont(:param_1) WITHIN GROUP (ORDER BY )",
+        )
+
+        f1 = func.percentile_cont(literal(1)).within_group(
+            column("q"), column("p").desc()
+        )
+        self.assert_compile(
+            util.pickle.loads(util.pickle.dumps(f1)),
+            "percentile_cont(:param_1) WITHIN GROUP (ORDER BY q, p DESC)",
         )
 
     def test_functions_with_cols(self):
@@ -737,6 +777,22 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
             "OVER (PARTITION BY mytable.description RANGE BETWEEN :param_1 "
             "FOLLOWING AND :param_2 FOLLOWING) "
             "AS anon_1 FROM mytable",
+            checkparams={"name_1": "foo", "param_1": 1, "param_2": 5},
+        )
+
+    def test_funcfilter_windowing_range_positional(self):
+        self.assert_compile(
+            select(
+                func.rank()
+                .filter(table1.c.name > "foo")
+                .over(range_=(1, 5), partition_by=["description"])
+            ),
+            "SELECT rank() FILTER (WHERE mytable.name > ?) "
+            "OVER (PARTITION BY mytable.description RANGE BETWEEN ? "
+            "FOLLOWING AND ? FOLLOWING) "
+            "AS anon_1 FROM mytable",
+            checkpositional=("foo", 1, 5),
+            dialect="default_qmark",
         )
 
     def test_funcfilter_windowing_rows(self):
@@ -990,6 +1046,7 @@ class ExecuteTest(fixtures.TestBase):
         from sqlalchemy.ext.compiler import compiles
 
         class myfunc(FunctionElement):
+            inherit_cache = True
             type = Date()
 
         @compiles(myfunc)
@@ -1358,7 +1415,7 @@ class TableValuedCompileTest(fixtures.TestBase, AssertsCompiledSQL):
         `WITH ORDINALITY AS unnested(unnested, ordinality) ON true
         LEFT OUTER JOIN b ON unnested.unnested = b.ref
 
-        """  # noqa 501
+        """  # noqa: 501
 
         a = table("a", column("id"), column("refs"))
         b = table("b", column("id"), column("ref"))
@@ -1388,6 +1445,30 @@ class TableValuedCompileTest(fixtures.TestBase, AssertsCompiledSQL):
             "WITH ORDINALITY AS unnested(unnested, ordinality) ON true "
             "LEFT OUTER JOIN b ON unnested.unnested = b.ref",
         )
+
+    def test_render_derived_maintains_tableval_type(self):
+        fn = func.json_something()
+
+        tv = fn.table_valued(column("x", String))
+
+        eq_(tv.column.type, testing.eq_type_affinity(sqltypes.TableValueType))
+        eq_(tv.column.type._elements[0].type, testing.eq_type_affinity(String))
+
+        tv = tv.render_derived()
+        eq_(tv.column.type, testing.eq_type_affinity(sqltypes.TableValueType))
+        eq_(tv.column.type._elements[0].type, testing.eq_type_affinity(String))
+
+    def test_alias_maintains_tableval_type(self):
+        fn = func.json_something()
+
+        tv = fn.table_valued(column("x", String))
+
+        eq_(tv.column.type, testing.eq_type_affinity(sqltypes.TableValueType))
+        eq_(tv.column.type._elements[0].type, testing.eq_type_affinity(String))
+
+        tv = tv.alias()
+        eq_(tv.column.type, testing.eq_type_affinity(sqltypes.TableValueType))
+        eq_(tv.column.type._elements[0].type, testing.eq_type_affinity(String))
 
     def test_star_with_ordinality(self):
         """

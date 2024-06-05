@@ -9,6 +9,7 @@ from sqlalchemy import extract
 from sqlalchemy import ForeignKey
 from sqlalchemy import func
 from sqlalchemy import Integer
+from sqlalchemy import join
 from sqlalchemy import literal
 from sqlalchemy import literal_column
 from sqlalchemy import MetaData
@@ -42,6 +43,7 @@ from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
 from sqlalchemy.testing import is_not
+from sqlalchemy.testing.schema import eq_clause_element
 from sqlalchemy.util import pickle
 
 A = B = t1 = t2 = t3 = table1 = table2 = table3 = table4 = None
@@ -186,10 +188,16 @@ class TraversalTest(
         ("clone",), ("pickle",), ("conv_to_unique"), ("none"), argnames="meth"
     )
     @testing.combinations(
-        ("name with space",), ("name with [brackets]",), argnames="name"
+        ("name with space",),
+        ("name with [brackets]",),
+        ("name with~~tildes~~",),
+        argnames="name",
     )
-    def test_bindparam_key_proc_for_copies(self, meth, name):
+    @testing.combinations(True, False, argnames="positional")
+    def test_bindparam_key_proc_for_copies(self, meth, name, positional):
         r"""test :ticket:`6249`.
+
+        Revised for :ticket:`8056`.
 
         The key of the bindparam needs spaces and other characters
         escaped out for the POSTCOMPILE regex to work correctly.
@@ -197,11 +205,11 @@ class TraversalTest(
 
         Currently, the bind key reg is::
 
-            re.sub(r"[%\(\) \$]+", "_", body).strip("_")
+            re.sub(r"[%\(\) \$\[\]]", "_", name)
 
         and the compiler postcompile reg is::
 
-            re.sub(r"\[POSTCOMPILE_(\S+)\]", process_expanding, self.string)
+            re.sub(r"\__[POSTCOMPILE_(\S+)\]", process_expanding, self.string)
 
         Interestingly, brackets in the name seems to work out.
 
@@ -216,14 +224,27 @@ class TraversalTest(
             expr.right.unique = False
             expr.right._convert_to_unique()
 
-        token = re.sub(r"[%\(\) \$]+", "_", name).strip("_")
-        self.assert_compile(
-            expr,
-            '"%(name)s" IN (:%(token)s_1_1, '
-            ":%(token)s_1_2, :%(token)s_1_3)" % {"name": name, "token": token},
-            render_postcompile=True,
-            dialect="default",
-        )
+        token = re.sub(r"[%\(\) \$\[\]]", "_", name)
+
+        if positional:
+            self.assert_compile(
+                expr,
+                '"%(name)s" IN (?, ?, ?)' % {"name": name},
+                checkpositional=(1, 2, 3),
+                render_postcompile=True,
+                dialect="default_qmark",
+            )
+        else:
+            tokens = ["%s_1_%s" % (token, i) for i in range(1, 4)]
+            self.assert_compile(
+                expr,
+                '"%(name)s" IN (:%(token)s_1_1, '
+                ":%(token)s_1_2, :%(token)s_1_3)"
+                % {"name": name, "token": token},
+                checkparams=dict(zip(tokens, [1, 2, 3])),
+                render_postcompile=True,
+                dialect="default",
+            )
 
     def test_expanding_in_bindparam_safe_to_clone(self):
         expr = column("x").in_([1, 2, 3])
@@ -235,7 +256,7 @@ class TraversalTest(
 
         stmt = and_(expr, expr2)
         self.assert_compile(
-            stmt, "x IN ([POSTCOMPILE_x_1]) AND x IN ([POSTCOMPILE_x_1])"
+            stmt, "x IN (__[POSTCOMPILE_x_1]) AND x IN (__[POSTCOMPILE_x_1])"
         )
         self.assert_compile(
             stmt, "x IN (1, 2, 3) AND x IN (1, 2, 3)", literal_binds=True
@@ -794,6 +815,151 @@ class ClauseTest(fixtures.TestBase, AssertsCompiledSQL):
         eq_(str(u2), str(u3))
         eq_(u2.compile().params, {"id_param": 7})
         eq_(u3.compile().params, {"id_param": 10})
+
+    def test_params_elements_in_setup_joins(self):
+        """test #7055"""
+
+        meta = MetaData()
+
+        X = Table("x", meta, Column("a", Integer), Column("b", Integer))
+        Y = Table("y", meta, Column("a", Integer), Column("b", Integer))
+        s1 = select(X.c.a).where(X.c.b == bindparam("xb")).alias("s1")
+        jj = (
+            select(Y)
+            .join(s1, Y.c.a == s1.c.a)
+            .where(Y.c.b == bindparam("yb"))
+            .alias("s2")
+        )
+
+        params = {"xb": 42, "yb": 33}
+        sel = select(Y).select_from(jj).params(params)
+
+        eq_(
+            [
+                eq_clause_element(bindparam("yb", value=33)),
+                eq_clause_element(bindparam("xb", value=42)),
+            ],
+            sel._generate_cache_key()[1],
+        )
+
+    def test_params_on_expr_against_subquery(self):
+        """test #7489"""
+
+        meta = MetaData()
+
+        b = Table("b", meta, Column("id", Integer), Column("data", String))
+
+        subq = select(b.c.id).where(b.c.data == "some data").subquery()
+        criteria = b.c.id == subq.c.id
+
+        stmt = select(b).where(criteria)
+        param_key = stmt._generate_cache_key()[1][0].key
+
+        self.assert_compile(
+            stmt,
+            "SELECT b.id, b.data FROM b, (SELECT b.id AS id "
+            "FROM b WHERE b.data = :data_1) AS anon_1 WHERE b.id = anon_1.id",
+            checkparams={"data_1": "some data"},
+        )
+        eq_(
+            [
+                eq_clause_element(bindparam(param_key, value="some data")),
+            ],
+            stmt._generate_cache_key()[1],
+        )
+
+        stmt = select(b).where(criteria.params({param_key: "some other data"}))
+        self.assert_compile(
+            stmt,
+            "SELECT b.id, b.data FROM b, (SELECT b.id AS id "
+            "FROM b WHERE b.data = :data_1) AS anon_1 WHERE b.id = anon_1.id",
+            checkparams={"data_1": "some other data"},
+        )
+        eq_(
+            [
+                eq_clause_element(
+                    bindparam(param_key, value="some other data")
+                ),
+            ],
+            stmt._generate_cache_key()[1],
+        )
+
+    def test_params_subqueries_in_joins_one(self):
+        """test #7055"""
+
+        meta = MetaData()
+
+        Pe = Table(
+            "pe",
+            meta,
+            Column("c", Integer),
+            Column("p", Integer),
+            Column("pid", Integer),
+        )
+        S = Table(
+            "s",
+            meta,
+            Column("c", Integer),
+            Column("p", Integer),
+            Column("sid", Integer),
+        )
+        Ps = Table("ps", meta, Column("c", Integer), Column("p", Integer))
+        params = {"pid": 42, "sid": 33}
+
+        pe_s = select(Pe).where(Pe.c.pid == bindparam("pid")).alias("pe_s")
+        s_s = select(S).where(S.c.sid == bindparam("sid")).alias("s_s")
+        jj = join(
+            Ps,
+            join(pe_s, s_s, and_(pe_s.c.c == s_s.c.c, pe_s.c.p == s_s.c.p)),
+            and_(Ps.c.c == pe_s.c.c, Ps.c.p == Ps.c.p),
+        ).params(params)
+
+        eq_(
+            [
+                eq_clause_element(bindparam("pid", value=42)),
+                eq_clause_element(bindparam("sid", value=33)),
+            ],
+            jj._generate_cache_key()[1],
+        )
+
+    def test_params_subqueries_in_joins_two(self):
+        """test #7055"""
+
+        meta = MetaData()
+
+        Pe = Table(
+            "pe",
+            meta,
+            Column("c", Integer),
+            Column("p", Integer),
+            Column("pid", Integer),
+        )
+        S = Table(
+            "s",
+            meta,
+            Column("c", Integer),
+            Column("p", Integer),
+            Column("sid", Integer),
+        )
+        Ps = Table("ps", meta, Column("c", Integer), Column("p", Integer))
+
+        params = {"pid": 42, "sid": 33}
+
+        pe_s = select(Pe).where(Pe.c.pid == bindparam("pid")).alias("pe_s")
+        s_s = select(S).where(S.c.sid == bindparam("sid")).alias("s_s")
+        jj = (
+            join(Ps, pe_s, and_(Ps.c.c == pe_s.c.c, Ps.c.p == Ps.c.p))
+            .join(s_s, and_(Ps.c.c == s_s.c.c, Ps.c.p == s_s.c.p))
+            .params(params)
+        )
+
+        eq_(
+            [
+                eq_clause_element(bindparam("pid", value=42)),
+                eq_clause_element(bindparam("sid", value=33)),
+            ],
+            jj._generate_cache_key()[1],
+        )
 
     def test_in(self):
         expr = t1.c.col1.in_(["foo", "bar"])
@@ -2527,7 +2693,7 @@ class ValuesBaseTest(fixtures.TestBase, AssertsCompiledSQL):
 
     """Tests the generative capability of Insert, Update"""
 
-    __dialect__ = "default"
+    __dialect__ = "default_enhanced"
 
     # fixme: consolidate converage from elsewhere here and expand
 
@@ -2769,3 +2935,41 @@ class ValuesBaseTest(fixtures.TestBase, AssertsCompiledSQL):
             "UPDATE construct does not support multiple parameter sets.",
             stmt.compile,
         )
+
+    @testing.variation("stmt_type", ["update", "delete"])
+    def test_whereclause_returning_adapted(self, stmt_type):
+        """test #9033"""
+
+        if stmt_type.update:
+            stmt = (
+                t1.update()
+                .where(t1.c.col1 == 10)
+                .values(col1=15)
+                .returning(t1.c.col1)
+            )
+        elif stmt_type.delete:
+            stmt = t1.delete().where(t1.c.col1 == 10).returning(t1.c.col1)
+        else:
+            stmt_type.fail()
+
+        stmt = visitors.replacement_traverse(stmt, {}, lambda elem: None)
+
+        assert isinstance(stmt._where_criteria, tuple)
+        assert isinstance(stmt._returning, tuple)
+
+        stmt = stmt.where(t1.c.col2 == 5).returning(t1.c.col2)
+
+        if stmt_type.update:
+            self.assert_compile(
+                stmt,
+                "UPDATE table1 SET col1=:col1 WHERE table1.col1 = :col1_1 "
+                "AND table1.col2 = :col2_1 RETURNING table1.col1, table1.col2",
+            )
+        elif stmt_type.delete:
+            self.assert_compile(
+                stmt,
+                "DELETE FROM table1 WHERE table1.col1 = :col1_1 "
+                "AND table1.col2 = :col2_1 RETURNING table1.col1, table1.col2",
+            )
+        else:
+            stmt_type.fail()

@@ -3,7 +3,6 @@ from sqlalchemy import ForeignKey
 from sqlalchemy import func
 from sqlalchemy import Integer
 from sqlalchemy import testing
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
@@ -40,7 +39,7 @@ class GenerativeQueryTest(fixtures.MappedTest):
         class Foo(cls.Basic):
             pass
 
-        mapper(Foo, foo)
+        cls.mapper_registry.map_imperatively(Foo, foo)
 
     def test_selectby(self):
         Foo = self.classes.Foo
@@ -187,8 +186,8 @@ class GenerativeTest2(fixtures.MappedTest):
         class Obj2(cls.Basic):
             pass
 
-        mapper(Obj1, table1)
-        mapper(Obj2, table2)
+        cls.mapper_registry.map_imperatively(Obj1, table1)
+        cls.mapper_registry.map_imperatively(Obj2, table2)
 
     @classmethod
     def fixtures(cls):
@@ -241,17 +240,19 @@ class RelationshipsTest(_fixtures.FixtureTest):
             cls.tables.users,
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
                 "orders": relationship(
-                    mapper(
+                    cls.mapper_registry.map_imperatively(
                         Order,
                         orders,
                         properties={
                             "addresses": relationship(
-                                mapper(Address, addresses)
+                                cls.mapper_registry.map_imperatively(
+                                    Address, addresses
+                                )
                             )
                         },
                     )
@@ -263,11 +264,13 @@ class RelationshipsTest(_fixtures.FixtureTest):
         """Query.join"""
 
         User, Address = self.classes.User, self.classes.Address
+        Order = self.classes.Order
 
         session = fixture_session()
         q = (
             session.query(User)
-            .join("orders", "addresses")
+            .outerjoin(User.orders)
+            .outerjoin(Order.addresses)
             .filter(Address.id == 1)
         )
         eq_([User(id=7)], q.all())
@@ -284,7 +287,8 @@ class RelationshipsTest(_fixtures.FixtureTest):
         session = fixture_session()
         q = (
             session.query(User)
-            .outerjoin("orders", "addresses")
+            .outerjoin(User.orders)
+            .outerjoin(Order.addresses)
             .filter(sa.or_(Order.id == None, Address.id == 1))
         )  # noqa
         eq_(set([User(id=7), User(id=8), User(id=10)]), set(q.all()))
@@ -302,7 +306,8 @@ class RelationshipsTest(_fixtures.FixtureTest):
 
         q = (
             session.query(User)
-            .outerjoin("orders", "addresses")
+            .outerjoin(User.orders)
+            .outerjoin(Order.addresses)
             .filter(sa.or_(Order.id == None, Address.id == 1))
         )  # noqa
         eq_(q.count(), 4)
@@ -351,8 +356,8 @@ class CaseSensitiveTest(fixtures.MappedTest):
         class Obj2(cls.Basic):
             pass
 
-        mapper(Obj1, Table1)
-        mapper(Obj2, Table2)
+        cls.mapper_registry.map_imperatively(Obj1, Table1)
+        cls.mapper_registry.map_imperatively(Obj2, Table2)
 
     @classmethod
     def fixtures(cls):

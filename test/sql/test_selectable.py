@@ -4,10 +4,13 @@ from sqlalchemy import bindparam
 from sqlalchemy import Boolean
 from sqlalchemy import cast
 from sqlalchemy import Column
+from sqlalchemy import delete
 from sqlalchemy import exc
 from sqlalchemy import exists
+from sqlalchemy import false
 from sqlalchemy import ForeignKey
 from sqlalchemy import func
+from sqlalchemy import insert
 from sqlalchemy import Integer
 from sqlalchemy import join
 from sqlalchemy import literal_column
@@ -22,9 +25,11 @@ from sqlalchemy import String
 from sqlalchemy import Table
 from sqlalchemy import testing
 from sqlalchemy import text
+from sqlalchemy import true
 from sqlalchemy import type_coerce
 from sqlalchemy import TypeDecorator
 from sqlalchemy import union
+from sqlalchemy import update
 from sqlalchemy import util
 from sqlalchemy.sql import Alias
 from sqlalchemy.sql import annotation
@@ -83,6 +88,135 @@ class SelectableTest(
     fixtures.TestBase, AssertsExecutionResults, AssertsCompiledSQL
 ):
     __dialect__ = "default"
+
+    @testing.combinations(
+        (
+            (table1.c.col1, table1.c.col2),
+            [
+                {
+                    "name": "col1",
+                    "type": table1.c.col1.type,
+                    "expr": table1.c.col1,
+                },
+                {
+                    "name": "col2",
+                    "type": table1.c.col2.type,
+                    "expr": table1.c.col2,
+                },
+            ],
+        ),
+        (
+            (table1,),
+            [
+                {
+                    "name": "col1",
+                    "type": table1.c.col1.type,
+                    "expr": table1.c.col1,
+                },
+                {
+                    "name": "col2",
+                    "type": table1.c.col2.type,
+                    "expr": table1.c.col2,
+                },
+                {
+                    "name": "col3",
+                    "type": table1.c.col3.type,
+                    "expr": table1.c.col3,
+                },
+                {
+                    "name": "colx",
+                    "type": table1.c.colx.type,
+                    "expr": table1.c.colx,
+                },
+            ],
+        ),
+        (
+            (func.count(table1.c.col1),),
+            [
+                {
+                    "name": "count",
+                    "type": testing.eq_type_affinity(Integer),
+                    "expr": testing.eq_clause_element(
+                        func.count(table1.c.col1)
+                    ),
+                }
+            ],
+        ),
+        (
+            (func.count(table1.c.col1), func.count(table1.c.col2)),
+            [
+                {
+                    "name": "count",
+                    "type": testing.eq_type_affinity(Integer),
+                    "expr": testing.eq_clause_element(
+                        func.count(table1.c.col1)
+                    ),
+                },
+                {
+                    "name": "count_1",
+                    "type": testing.eq_type_affinity(Integer),
+                    "expr": testing.eq_clause_element(
+                        func.count(table1.c.col2)
+                    ),
+                },
+            ],
+        ),
+    )
+    def test_core_column_descriptions(self, cols, expected):
+        stmt = select(*cols)
+        # reverse eq_ is so eq_clause_element works
+        eq_(expected, stmt.column_descriptions)
+
+    @testing.combinations(insert, update, delete, argnames="dml_construct")
+    @testing.combinations(
+        (
+            table1,
+            (table1.c.col1, table1.c.col2),
+            {"name": "table1", "table": table1},
+            [
+                {
+                    "name": "col1",
+                    "type": table1.c.col1.type,
+                    "expr": table1.c.col1,
+                },
+                {
+                    "name": "col2",
+                    "type": table1.c.col2.type,
+                    "expr": table1.c.col2,
+                },
+            ],
+        ),
+        (
+            table1,
+            (func.count(table1.c.col1),),
+            {"name": "table1", "table": table1},
+            [
+                {
+                    "name": None,
+                    "type": testing.eq_type_affinity(Integer),
+                    "expr": testing.eq_clause_element(
+                        func.count(table1.c.col1)
+                    ),
+                },
+            ],
+        ),
+        (
+            table1,
+            None,
+            {"name": "table1", "table": table1},
+            [],
+        ),
+        argnames="entity, cols, expected_entity, expected_returning",
+    )
+    def test_dml_descriptions(
+        self, dml_construct, entity, cols, expected_entity, expected_returning
+    ):
+        stmt = dml_construct(entity)
+        if cols:
+            stmt = stmt.returning(*cols)
+
+        eq_(stmt.entity_description, expected_entity)
+        eq_(expected_returning, stmt.returning_column_descriptions)
 
     def test_indirect_correspondence_on_labels(self):
         # this test depends upon 'distance' to
@@ -250,8 +384,10 @@ class SelectableTest(
 
     @testing.combinations((True,), (False,))
     def test_broken_select_same_named_explicit_cols(self, use_anon):
-        # this is issue #6090.  the query is "wrong" and we dont know how
+        """test for #6090. the query is "wrong" and we dont know how
         # to render this right now.
+
+        """
         stmt = select(
             table1.c.col1,
             table1.c.col2,
@@ -277,6 +413,24 @@ class SelectableTest(
                 "unique names for explicit labels.",
             ):
                 select(stmt.subquery()).compile()
+
+    def test_same_anon_named_explicit_cols(self):
+        """test for #8569.  This adjusts the change in #6090 to not apply
+        to anonymous labels.
+
+        """
+        lc = literal_column("col2").label(None)
+
+        subq1 = select(lc).subquery()
+
+        stmt2 = select(subq1, lc).subquery()
+
+        self.assert_compile(
+            select(stmt2),
+            "SELECT anon_1.col2_1, anon_1.col2_1_1 FROM "
+            "(SELECT anon_2.col2_1 AS col2_1, col2 AS col2_1 FROM "
+            "(SELECT col2 AS col2_1) AS anon_2) AS anon_1",
+        )
 
     def test_select_label_grouped_still_corresponds(self):
         label = select(table1.c.col1).label("foo")
@@ -512,6 +666,21 @@ class SelectableTest(
         stmt2 = visitors.cloned_traverse(stmt, {}, {"select": add_column})
         eq_(list(stmt.c.keys()), ["q"])
         eq_(list(stmt2.c.keys()), ["q", "p"])
+
+    @testing.combinations(
+        func.now(), null(), true(), false(), literal_column("10"), column("x")
+    )
+    def test_const_object_correspondence(self, c):
+        """test #7154"""
+
+        stmt = select(c).subquery()
+
+        stmt2 = select(stmt)
+
+        is_(
+            stmt2.selected_columns.corresponding_column(c),
+            stmt2.selected_columns[0],
+        )
 
     def test_append_column_after_visitor_replace(self):
         # test for a supported idiom that matches the deprecated / removed
@@ -1258,21 +1427,67 @@ class SelectableTest(
         assert j4.corresponding_column(j2.c.aid) is j4.c.aid
         assert j4.corresponding_column(a.c.id) is j4.c.id
 
-    def test_two_metadata_join_raises(self):
+    @testing.combinations(True, False)
+    def test_two_metadata_join_raises(self, include_a_joining_table):
+        """test case from 2008 enhanced as of #8101, more specific failure
+        modes for non-resolvable FKs
+
+        """
         m = MetaData()
         m2 = MetaData()
 
         t1 = Table("t1", m, Column("id", Integer), Column("id2", Integer))
-        t2 = Table("t2", m, Column("id", Integer, ForeignKey("t1.id")))
+
+        if include_a_joining_table:
+            t2 = Table("t2", m, Column("id", Integer, ForeignKey("t1.id")))
+
         t3 = Table("t3", m2, Column("id", Integer, ForeignKey("t1.id2")))
 
-        s = (
-            select(t2, t3)
-            .set_label_style(LABEL_STYLE_TABLENAME_PLUS_COL)
-            .subquery()
-        )
+        with expect_raises_message(
+            exc.NoReferencedTableError,
+            "Foreign key associated with column 't3.id'",
+        ):
+            t3.join(t1)
 
-        assert_raises(exc.NoReferencedTableError, s.join, t1)
+        if include_a_joining_table:
+            s = (
+                select(t2, t3)
+                .set_label_style(LABEL_STYLE_TABLENAME_PLUS_COL)
+                .subquery()
+            )
+        else:
+            s = (
+                select(t3)
+                .set_label_style(LABEL_STYLE_TABLENAME_PLUS_COL)
+                .subquery()
+            )
+
+        with expect_raises_message(
+            exc.NoReferencedTableError,
+            "Foreign key associated with column 'anon_1.t3_id' could not "
+            "find table 't1' with which to generate a foreign key to target "
+            "column 'id2'",
+        ):
+            select(s.join(t1)),
+
+        # manual join is OK.  using select().join() here is also exercising
+        # that join() does not need to resolve FKs if we provided the
+        # ON clause
+        if include_a_joining_table:
+            self.assert_compile(
+                select(s).join(
+                    t1, and_(s.c.t2_id == t1.c.id, s.c.t3_id == t1.c.id)
+                ),
+                "SELECT anon_1.t2_id, anon_1.t3_id FROM (SELECT "
+                "t2.id AS t2_id, t3.id AS t3_id FROM t2, t3) AS anon_1 "
+                "JOIN t1 ON anon_1.t2_id = t1.id AND anon_1.t3_id = t1.id",
+            )
+        else:
+            self.assert_compile(
+                select(s).join(t1, s.c.t3_id == t1.c.id),
+                "SELECT anon_1.t3_id FROM (SELECT t3.id AS t3_id FROM t3) "
+                "AS anon_1 JOIN t1 ON anon_1.t3_id = t1.id",
+            )
 
     def test_multi_label_chain_naming_col(self):
         # See [ticket:2167] for this one.
@@ -1468,6 +1683,14 @@ class SelectableTest(
         # actively swaps out whereclause and others
         assert s3._whereclause.left.table is not s1
         assert s3._whereclause.left.table in froms
+
+    def test_table_schema(self):
+        t = table("foo")
+        eq_(t.name, "foo")
+        eq_(t.fullname, "foo")
+        t = table("foo", schema="bar")
+        eq_(t.name, "foo")
+        eq_(t.fullname, "bar.foo")
 
 
 class RefreshForNewColTest(fixtures.TestBase):
@@ -2752,7 +2975,7 @@ class AnnotationsTest(fixtures.TestBase):
         # proxy_set, as corresponding_column iterates through proxy_set
         # in this way
         d = {}
-        for col in p2._uncached_proxy_set():
+        for col in p2._uncached_proxy_list():
             d.update(col._annotations)
         eq_(d, {"weight": 10})
 
@@ -2768,7 +2991,7 @@ class AnnotationsTest(fixtures.TestBase):
         proxy._proxies = [c1._annotate({"weight": 10})]
 
         d = {}
-        for col in proxy._uncached_proxy_set():
+        for col in proxy._uncached_proxy_list():
             d.update(col._annotations)
         eq_(d, {"weight": 10})
 
@@ -2923,7 +3146,7 @@ class AnnotationsTest(fixtures.TestBase):
             (table1.c.col1 == 5, "table1.col1 = :col1_1"),
             (
                 table1.c.col1.in_([2, 3, 4]),
-                "table1.col1 IN ([POSTCOMPILE_col1_1])",
+                "table1.col1 IN (__[POSTCOMPILE_col1_1])",
             ),
         ]:
             eq_(str(expr), expected)
@@ -3172,7 +3395,7 @@ class ReprTest(fixtures.TestBase):
             repr(obj)
 
 
-class WithLabelsTest(fixtures.TestBase):
+class WithLabelsTest(AssertsCompiledSQL, fixtures.TestBase):
     def _assert_result_keys(self, s, keys):
         compiled = s.compile()
 
@@ -3257,6 +3480,54 @@ class WithLabelsTest(fixtures.TestBase):
         eq_(list(sel.selected_columns.keys()), ["t1_x", "t1_y", "t1_x_1"])
         eq_(list(sel.subquery().c.keys()), ["t1_x", "t1_y", "t1_x_1"])
         self._assert_result_keys(sel, ["t1_x__1", "t1_x", "t1_y"])
+
+    def _columns_repeated_identity(self):
+        m = MetaData()
+        t1 = Table("t1", m, Column("x", Integer), Column("y", Integer))
+        return select(t1.c.x, t1.c.y, t1.c.x, t1.c.x, t1.c.x).set_label_style(
+            LABEL_STYLE_NONE
+        )
+
+    def _anon_columns_repeated_identity_one(self):
+        m = MetaData()
+        t1 = Table("t1", m, Column("x", Integer), Column("y", Integer))
+        return select(t1.c.x, null(), null(), null()).set_label_style(
+            LABEL_STYLE_NONE
+        )
+
+    def _anon_columns_repeated_identity_two(self):
+        fn = func.now()
+        return select(fn, fn, fn, fn).set_label_style(LABEL_STYLE_NONE)
+
+    def test_columns_repeated_identity_disambiguate(self):
+        """test #7153"""
+        sel = self._columns_repeated_identity().set_label_style(
+            LABEL_STYLE_DISAMBIGUATE_ONLY
+        )
+
+        self.assert_compile(
+            sel,
+            "SELECT t1.x, t1.y, t1.x AS x__1, t1.x AS x__2, "
+            "t1.x AS x__3 FROM t1",
+        )
+
+    def test_columns_repeated_identity_subquery_disambiguate(self):
+        """test #7153"""
+        sel = self._columns_repeated_identity()
+
+        stmt = select(sel.subquery()).set_label_style(
+            LABEL_STYLE_DISAMBIGUATE_ONLY
+        )
+
+        # databases like MySQL won't allow the subquery to have repeated labels
+        # even if we don't try to access them
+        self.assert_compile(
+            stmt,
+            "SELECT anon_1.x, anon_1.y, anon_1.x AS x_1, anon_1.x AS x_2, "
+            "anon_1.x AS x_3 FROM "
+            "(SELECT t1.x AS x, t1.y AS y, t1.x AS x__1, t1.x AS x__2, "
+            "t1.x AS x__3 FROM t1) AS anon_1",
+        )
 
     def _labels_overlap(self):
         m = MetaData()

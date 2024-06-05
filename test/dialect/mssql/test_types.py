@@ -50,6 +50,7 @@ from sqlalchemy.testing import ComparesTables
 from sqlalchemy.testing import emits_warning_on
 from sqlalchemy.testing import engines
 from sqlalchemy.testing import eq_
+from sqlalchemy.testing import expect_raises_message
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
 from sqlalchemy.testing import is_not
@@ -197,7 +198,7 @@ class RowVersionTest(fixtures.TablesTest):
         assert isinstance(insp.get_columns("ts_t")[1]["type"], TIMESTAMP)
 
     def test_class_hierarchy(self):
-        """TIMESTAMP and ROWVERSION aren't datetime types, theyre binary."""
+        """TIMESTAMP and ROWVERSION aren't datetime types, they're binary."""
 
         assert issubclass(TIMESTAMP, sqltypes._Binary)
         assert issubclass(ROWVERSION, sqltypes._Binary)
@@ -395,68 +396,83 @@ class TypeDDLTest(fixtures.TestBase):
             )
             self.assert_(repr(col))
 
-    def test_dates(self):
+    @testing.combinations(
+        # column type, args, kwargs, expected ddl
+        (mssql.MSDateTime, [], {}, "DATETIME", None),
+        (types.DATE, [], {}, "DATE", None),
+        (types.Date, [], {}, "DATE", None),
+        (types.Date, [], {}, "DATETIME", MS_2005_VERSION),
+        (mssql.MSDate, [], {}, "DATE", None),
+        (mssql.MSDate, [], {}, "DATETIME", MS_2005_VERSION),
+        (types.TIME, [], {}, "TIME", None),
+        (types.Time, [], {}, "TIME", None),
+        (mssql.MSTime, [], {}, "TIME", None),
+        (mssql.MSTime, [1], {}, "TIME(1)", None),
+        (types.Time, [], {}, "DATETIME", MS_2005_VERSION),
+        (mssql.MSTime, [], {}, "TIME", None),
+        (mssql.MSSmallDateTime, [], {}, "SMALLDATETIME", None),
+        (mssql.MSDateTimeOffset, [], {}, "DATETIMEOFFSET", None),
+        (mssql.MSDateTimeOffset, [1], {}, "DATETIMEOFFSET(1)", None),
+        (mssql.MSDateTime2, [], {}, "DATETIME2", None),
+        (mssql.MSDateTime2, [0], {}, "DATETIME2(0)", None),
+        (mssql.MSDateTime2, [1], {}, "DATETIME2(1)", None),
+        (mssql.MSTime, [0], {}, "TIME(0)", None),
+        (mssql.MSDateTimeOffset, [0], {}, "DATETIMEOFFSET(0)", None),
+        (types.DateTime, [], {"timezone": True}, "DATETIMEOFFSET", None),
+        (types.DateTime, [], {"timezone": False}, "DATETIME", None),
+        argnames="type_, args, kw, res, server_version",
+    )
+    @testing.combinations((True,), (False,), argnames="use_type_descriptor")
+    @testing.combinations(
+        ("base",), ("pyodbc",), ("pymssql",), argnames="driver"
+    )
+    def test_dates(
+        self, type_, args, kw, res, server_version, use_type_descriptor, driver
+    ):
         "Exercise type specification for date types."
 
-        columns = [
-            # column type, args, kwargs, expected ddl
-            (mssql.MSDateTime, [], {}, "DATETIME", None),
-            (types.DATE, [], {}, "DATE", None),
-            (types.Date, [], {}, "DATE", None),
-            (types.Date, [], {}, "DATETIME", MS_2005_VERSION),
-            (mssql.MSDate, [], {}, "DATE", None),
-            (mssql.MSDate, [], {}, "DATETIME", MS_2005_VERSION),
-            (types.TIME, [], {}, "TIME", None),
-            (types.Time, [], {}, "TIME", None),
-            (mssql.MSTime, [], {}, "TIME", None),
-            (mssql.MSTime, [1], {}, "TIME(1)", None),
-            (types.Time, [], {}, "DATETIME", MS_2005_VERSION),
-            (mssql.MSTime, [], {}, "TIME", None),
-            (mssql.MSSmallDateTime, [], {}, "SMALLDATETIME", None),
-            (mssql.MSDateTimeOffset, [], {}, "DATETIMEOFFSET", None),
-            (mssql.MSDateTimeOffset, [1], {}, "DATETIMEOFFSET(1)", None),
-            (mssql.MSDateTime2, [], {}, "DATETIME2", None),
-            (mssql.MSDateTime2, [0], {}, "DATETIME2(0)", None),
-            (mssql.MSDateTime2, [1], {}, "DATETIME2(1)", None),
-            (mssql.MSTime, [0], {}, "TIME(0)", None),
-            (mssql.MSDateTimeOffset, [0], {}, "DATETIMEOFFSET(0)", None),
-            (types.DateTime, [], {"timezone": True}, "DATETIMEOFFSET", None),
-            (types.DateTime, [], {"timezone": False}, "DATETIME", None),
-        ]
+        if driver == "base":
+            from sqlalchemy.dialects.mssql import base
+
+            dialect = base.MSDialect()
+        elif driver == "pyodbc":
+            from sqlalchemy.dialects.mssql import pyodbc
+
+            dialect = pyodbc.dialect()
+        elif driver == "pymssql":
+            from sqlalchemy.dialects.mssql import pymssql
+
+            dialect = pymssql.dialect()
+        else:
+            assert False
+
+        if server_version:
+            dialect.server_version_info = server_version
+        else:
+            dialect.server_version_info = MS_2008_VERSION
 
         metadata = MetaData()
-        table_args = ["test_mssql_dates", metadata]
-        for index, spec in enumerate(columns):
-            type_, args, kw, res, server_version = spec
-            table_args.append(
-                Column("c%s" % index, type_(*args, **kw), nullable=None)
-            )
 
-        date_table = Table(*table_args)
-        dialect = mssql.dialect()
-        dialect.server_version_info = MS_2008_VERSION
-        ms_2005_dialect = mssql.dialect()
-        ms_2005_dialect.server_version_info = MS_2005_VERSION
+        typ = type_(*args, **kw)
+
+        if use_type_descriptor:
+            typ = dialect.type_descriptor(typ)
+
+        col = Column("date_c", typ, nullable=None)
+
+        date_table = Table("test_mssql_dates", metadata, col)
         gen = dialect.ddl_compiler(dialect, schema.CreateTable(date_table))
-        gen2005 = ms_2005_dialect.ddl_compiler(
-            ms_2005_dialect, schema.CreateTable(date_table)
+
+        testing.eq_(
+            gen.get_column_specification(col),
+            "%s %s"
+            % (
+                col.name,
+                res,
+            ),
         )
 
-        for col in date_table.c:
-            index = int(col.name[1:])
-            server_version = columns[index][4]
-            if not server_version:
-                testing.eq_(
-                    gen.get_column_specification(col),
-                    "%s %s" % (col.name, columns[index][3]),
-                )
-            else:
-                testing.eq_(
-                    gen2005.get_column_specification(col),
-                    "%s %s" % (col.name, columns[index][3]),
-                )
-
-            self.assert_(repr(col))
+        self.assert_(repr(col))
 
     def test_large_type_deprecation(self):
         d1 = mssql.dialect(deprecate_large_types=True)
@@ -516,6 +532,12 @@ class TypeDDLTest(fixtures.TestBase):
             (mssql.MSVarBinary, [10], {}, "VARBINARY(10)"),
             (types.VARBINARY, [10], {}, "VARBINARY(10)"),
             (types.VARBINARY, [], {}, "VARBINARY(max)"),
+            (
+                mssql.MSVarBinary,
+                [],
+                {"filestream": True},
+                "VARBINARY(max) FILESTREAM",
+            ),
             (mssql.MSImage, [], {}, "IMAGE"),
             (mssql.IMAGE, [], {}, "IMAGE"),
             (types.LargeBinary, [], {}, "IMAGE"),
@@ -538,6 +560,17 @@ class TypeDDLTest(fixtures.TestBase):
                 "%s %s" % (col.name, columns[index][3]),
             )
             self.assert_(repr(col))
+
+    def test_VARBINARY_init(self):
+        d = mssql.dialect()
+        t = mssql.MSVarBinary(length=None, filestream=True)
+        eq_(str(t.compile(dialect=d)), "VARBINARY(max) FILESTREAM")
+        t = mssql.MSVarBinary(length="max", filestream=True)
+        eq_(str(t.compile(dialect=d)), "VARBINARY(max) FILESTREAM")
+        with expect_raises_message(
+            ValueError, "length must be None or 'max' when setting filestream"
+        ):
+            mssql.MSVarBinary(length=1000, filestream=True)
 
 
 class TypeRoundTripTest(
@@ -997,6 +1030,15 @@ class TypeRoundTripTest(
             ),
         ]
 
+        if testing.requires.mssql_filestream.enabled:
+            columns.append(
+                (
+                    mssql.MSVarBinary,
+                    [],
+                    {"filestream": True},
+                    "VARBINARY(max) FILESTREAM",
+                )
+            )
         engine = engines.testing_engine(
             options={"deprecate_large_types": deprecate_large_types}
         )
@@ -1179,7 +1221,7 @@ class StringTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
     def test_string_text_explicit_literal_binds(self):
-        # the literal experssion here coerces the right side to
+        # the literal expression here coerces the right side to
         # Unicode on Python 3 for plain string, test with unicode
         # string just to confirm literal is doing this
         self.assert_compile(
@@ -1238,6 +1280,15 @@ class BinaryTest(fixtures.TestBase):
             True,
             None,
             False,
+        ),
+        (
+            mssql.VARBINARY(filestream=True),
+            "binary_data_one.dat",
+            None,
+            True,
+            None,
+            False,
+            testing.requires.mssql_filestream,
         ),
         (
             sqltypes.LargeBinary,

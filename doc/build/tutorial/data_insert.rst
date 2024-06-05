@@ -5,8 +5,7 @@
 
 .. include:: tutorial_nav_include.rst
 
-
-.. rst-class:: core-header
+.. rst-class:: core-header, orm-addin
 
 .. _tutorial_core_insert:
 
@@ -34,7 +33,7 @@ A simple example of :class:`_sql.Insert` illustrating the target table
 and the VALUES clause at once::
 
     >>> from sqlalchemy import insert
-    >>> stmt = insert(user_table).values(name='spongebob', fullname="Spongebob Squarepants")
+    >>> stmt = insert(user_table).values(name="spongebob", fullname="Spongebob Squarepants")
 
 The above ``stmt`` variable is an instance of :class:`_sql.Insert`.  Most
 SQL expressions can be stringified in place as a means to see the general
@@ -98,7 +97,7 @@ first integer primary key value, which we can acquire using the
 
 .. versionchanged:: 1.4.8 the tuple returned by
    :attr:`_engine.CursorResult.inserted_primary_key` is now a named tuple
-   fullfilled by returning it as a :class:`_result.Row` object.
+   fulfilled by returning it as a :class:`_result.Row` object.
 
 .. _tutorial_core_insert_values_clause:
 
@@ -121,8 +120,8 @@ illustrate this:
     ...         insert(user_table),
     ...         [
     ...             {"name": "sandy", "fullname": "Sandy Cheeks"},
-    ...             {"name": "patrick", "fullname": "Patrick Star"}
-    ...         ]
+    ...             {"name": "patrick", "fullname": "Patrick Star"},
+    ...         ],
     ...     )
     ...     conn.commit()
     {opensql}BEGIN (implicit)
@@ -165,20 +164,20 @@ construct automatically.
     .. sourcecode:: pycon+sql
 
         >>> from sqlalchemy import select, bindparam
-        >>> scalar_subquery = (
-        ...     select(user_table.c.id).
-        ...     where(user_table.c.name==bindparam('username')).
-        ...     scalar_subquery()
+        >>> scalar_subq = (
+        ...     select(user_table.c.id)
+        ...     .where(user_table.c.name == bindparam("username"))
+        ...     .scalar_subquery()
         ... )
 
         >>> with engine.connect() as conn:
         ...     result = conn.execute(
-        ...         insert(address_table).values(user_id=scalar_subquery),
+        ...         insert(address_table).values(user_id=scalar_subq),
         ...         [
-        ...             {"username": 'spongebob', "email_address": "spongebob@sqlalchemy.org"},
-        ...             {"username": 'sandy', "email_address": "sandy@sqlalchemy.org"},
-        ...             {"username": 'sandy', "email_address": "sandy@squirrelpower.org"},
-        ...         ]
+        ...             {"username": "spongebob", "email_address": "spongebob@sqlalchemy.org"},
+        ...             {"username": "sandy", "email_address": "sandy@sqlalchemy.org"},
+        ...             {"username": "sandy", "email_address": "sandy@squirrelpower.org"},
+        ...         ],
         ...     )
         ...     conn.commit()
         {opensql}BEGIN (implicit)
@@ -220,7 +219,9 @@ method; in this case, the :class:`_engine.Result`
 object that's returned when the statement is executed has rows which
 can be fetched::
 
-    >>> insert_stmt = insert(address_table).returning(address_table.c.id, address_table.c.email_address)
+    >>> insert_stmt = insert(address_table).returning(
+    ...     address_table.c.id, address_table.c.email_address
+    ... )
     >>> print(insert_stmt)
     {opensql}INSERT INTO address (id, user_id, email_address)
     VALUES (:id, :user_id, :email_address)

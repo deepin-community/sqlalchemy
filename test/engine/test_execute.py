@@ -1,6 +1,7 @@
 # coding: utf-8
 
 from contextlib import contextmanager
+import copy
 import re
 import threading
 import weakref
@@ -31,6 +32,7 @@ from sqlalchemy.pool import NullPool
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.sql import column
 from sqlalchemy.sql import literal
+from sqlalchemy.sql.elements import literal_column
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import config
@@ -263,6 +265,58 @@ class ExecuteTest(fixtures.TablesTest):
             (4, "sally"),
         ]
 
+    def test_non_dict_mapping(self, connection):
+        """ensure arbitrary Mapping works for execute()"""
+
+        class NotADict(collections_abc.Mapping):
+            def __init__(self, _data):
+                self._data = _data
+
+            def __iter__(self):
+                return iter(self._data)
+
+            def __len__(self):
+                return len(self._data)
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def keys(self):
+                return self._data.keys()
+
+        nd = NotADict({"a": 10, "b": 15})
+        eq_(dict(nd), {"a": 10, "b": 15})
+
+        result = connection.execute(
+            select(
+                bindparam("a", type_=Integer), bindparam("b", type_=Integer)
+            ),
+            nd,
+        )
+        eq_(result.first(), (10, 15))
+
+    def test_row_works_as_mapping(self, connection):
+        """ensure the RowMapping object works as a parameter dictionary for
+        execute."""
+
+        result = connection.execute(
+            select(literal(10).label("a"), literal(15).label("b"))
+        )
+        row = result.first()
+        eq_(row, (10, 15))
+        eq_(row._mapping, {"a": 10, "b": 15})
+
+        result = connection.execute(
+            select(
+                bindparam("a", type_=Integer).label("a"),
+                bindparam("b", type_=Integer).label("b"),
+            ),
+            row._mapping,
+        )
+        row = result.first()
+        eq_(row, (10, 15))
+        eq_(row._mapping, {"a": 10, "b": 15})
+
     def test_dialect_has_table_assertion(self):
         with expect_raises_message(
             tsa.exc.ArgumentError,
@@ -417,7 +471,7 @@ class ExecuteTest(fixtures.TablesTest):
             eq_(str(err), message)
 
             # unicode accessor decodes to utf-8
-            eq_(unicode(err), util.u("some message méil"))  # noqa F821
+            eq_(unicode(err), util.u("some message méil"))  # noqa: F821
         else:
             eq_(str(err), util.u("some message méil"))
 
@@ -432,7 +486,7 @@ class ExecuteTest(fixtures.TablesTest):
             eq_(str(err), message)
 
             # unicode accessor decodes to utf-8
-            eq_(unicode(err), util.u("some message m\\xe9il"))  # noqa F821
+            eq_(unicode(err), util.u("some message m\\xe9il"))  # noqa: F821
         else:
             eq_(str(err), util.u("some message m\\xe9il"))
 
@@ -443,7 +497,7 @@ class ExecuteTest(fixtures.TablesTest):
 
         err = tsa.exc.SQLAlchemyError(message)
         if util.py2k:
-            eq_(unicode(err), util.u("some message méil"))  # noqa F821
+            eq_(unicode(err), util.u("some message méil"))  # noqa: F821
         else:
             eq_(str(err), util.u("some message méil"))
 
@@ -452,7 +506,7 @@ class ExecuteTest(fixtures.TablesTest):
         eq_(str(err), "foo")
 
         if util.py2k:
-            eq_(unicode(err), util.u("fóó"))  # noqa F821
+            eq_(unicode(err), util.u("fóó"))  # noqa: F821
 
     def test_stmt_exception_str_multi_args(self):
         err = tsa.exc.SQLAlchemyError("some message", 206)
@@ -706,6 +760,32 @@ class ExecuteTest(fixtures.TablesTest):
                 eq_(conn.scalar(select(1)), 1)
             eng.dispose()
 
+    def test_scalar(self, connection):
+        conn = connection
+        users = self.tables.users
+        conn.execute(
+            users.insert(),
+            [
+                {"user_id": 1, "user_name": "sandy"},
+                {"user_id": 2, "user_name": "spongebob"},
+            ],
+        )
+        res = conn.scalar(select(users.c.user_name).order_by(users.c.user_id))
+        eq_(res, "sandy")
+
+    def test_scalars(self, connection):
+        conn = connection
+        users = self.tables.users
+        conn.execute(
+            users.insert(),
+            [
+                {"user_id": 1, "user_name": "sandy"},
+                {"user_id": 2, "user_name": "spongebob"},
+            ],
+        )
+        res = conn.scalars(select(users.c.user_name).order_by(users.c.user_id))
+        eq_(res.all(), ["sandy", "spongebob"])
+
 
 class UnicodeReturnsTest(fixtures.TestBase):
     @testing.requires.python3
@@ -786,16 +866,42 @@ class ConvenienceExecuteTest(fixtures.TablesTest):
         testing.run_as_contextmanager(ctx, fn, 5, value=8)
         self._assert_fn(5, value=8)
 
-    def test_transaction_engine_ctx_begin_fails(self):
+    def test_transaction_engine_ctx_begin_fails_dont_enter_enter(self):
+        """test #7272"""
         engine = engines.testing_engine()
 
         mock_connection = Mock(
             return_value=Mock(begin=Mock(side_effect=Exception("boom")))
         )
-        engine._connection_cls = mock_connection
-        assert_raises(Exception, engine.begin)
+        with mock.patch.object(engine, "_connection_cls", mock_connection):
+            if testing.requires.legacy_engine.enabled:
+                with expect_raises_message(Exception, "boom"):
+                    engine.begin()
+            else:
+                # context manager isn't entered, doesn't actually call
+                # connect() or connection.begin()
+                engine.begin()
 
-        eq_(mock_connection.return_value.close.mock_calls, [call()])
+        if testing.requires.legacy_engine.enabled:
+            eq_(mock_connection.return_value.close.mock_calls, [call()])
+        else:
+            eq_(mock_connection.return_value.close.mock_calls, [])
+
+    def test_transaction_engine_ctx_begin_fails_include_enter(self):
+        """test #7272"""
+        engine = engines.testing_engine()
+
+        close_mock = Mock()
+        with mock.patch.object(
+            engine._connection_cls,
+            "begin",
+            Mock(side_effect=Exception("boom")),
+        ), mock.patch.object(engine._connection_cls, "close", close_mock):
+            with expect_raises_message(Exception, "boom"):
+                with engine.begin():
+                    pass
+
+        eq_(close_mock.mock_calls, [call()])
 
     def test_transaction_engine_ctx_rollback(self):
         fn = self._trans_rollback_fn()
@@ -840,6 +946,7 @@ class ConvenienceExecuteTest(fixtures.TablesTest):
         self._assert_fn(5, value=8)
 
     @testing.fails_on("mysql+oursql", "oursql bug ?  getting wrong rowcount")
+    @testing.requires.legacy_engine
     def test_connect_as_ctx_noautocommit(self):
         fn = self._trans_fn()
         self._assert_no_data()
@@ -849,6 +956,12 @@ class ConvenienceExecuteTest(fixtures.TablesTest):
             testing.run_as_contextmanager(ctx, fn, 5, value=8)
             # autocommit is off
             self._assert_no_data()
+
+
+class FutureConvenienceExecuteTest(
+    fixtures.FutureEngineMixin, ConvenienceExecuteTest
+):
+    __backend__ = True
 
 
 class CompiledCacheTest(fixtures.TestBase):
@@ -1095,12 +1208,12 @@ class SchemaTranslateTest(fixtures.TestBase, testing.AssertsExecutionResults):
             t1.drop(conn)
 
         asserter.assert_(
-            CompiledSQL("CREATE TABLE [SCHEMA__none].t1 (x INTEGER)"),
-            CompiledSQL("CREATE TABLE [SCHEMA_foo].t2 (x INTEGER)"),
-            CompiledSQL("CREATE TABLE [SCHEMA_bar].t3 (x INTEGER)"),
-            CompiledSQL("DROP TABLE [SCHEMA_bar].t3"),
-            CompiledSQL("DROP TABLE [SCHEMA_foo].t2"),
-            CompiledSQL("DROP TABLE [SCHEMA__none].t1"),
+            CompiledSQL("CREATE TABLE __[SCHEMA__none].t1 (x INTEGER)"),
+            CompiledSQL("CREATE TABLE __[SCHEMA_foo].t2 (x INTEGER)"),
+            CompiledSQL("CREATE TABLE __[SCHEMA_bar].t3 (x INTEGER)"),
+            CompiledSQL("DROP TABLE __[SCHEMA_bar].t3"),
+            CompiledSQL("DROP TABLE __[SCHEMA_foo].t2"),
+            CompiledSQL("DROP TABLE __[SCHEMA__none].t1"),
         )
 
     def test_ddl_hastable(self, plain_tables, connection):
@@ -1200,27 +1313,29 @@ class SchemaTranslateTest(fixtures.TestBase, testing.AssertsExecutionResults):
             conn._execute_20(t3.delete(), execution_options=execution_options)
 
         asserter.assert_(
-            CompiledSQL("INSERT INTO [SCHEMA__none].t1 (x) VALUES (:x)"),
-            CompiledSQL("INSERT INTO [SCHEMA_foo].t2 (x) VALUES (:x)"),
-            CompiledSQL("INSERT INTO [SCHEMA_bar].t3 (x) VALUES (:x)"),
+            CompiledSQL("INSERT INTO __[SCHEMA__none].t1 (x) VALUES (:x)"),
+            CompiledSQL("INSERT INTO __[SCHEMA_foo].t2 (x) VALUES (:x)"),
+            CompiledSQL("INSERT INTO __[SCHEMA_bar].t3 (x) VALUES (:x)"),
             CompiledSQL(
-                "UPDATE [SCHEMA__none].t1 SET x=:x WHERE "
-                "[SCHEMA__none].t1.x = :x_1"
+                "UPDATE __[SCHEMA__none].t1 SET x=:x WHERE "
+                "__[SCHEMA__none].t1.x = :x_1"
             ),
             CompiledSQL(
-                "UPDATE [SCHEMA_foo].t2 SET x=:x WHERE "
-                "[SCHEMA_foo].t2.x = :x_1"
+                "UPDATE __[SCHEMA_foo].t2 SET x=:x WHERE "
+                "__[SCHEMA_foo].t2.x = :x_1"
             ),
             CompiledSQL(
-                "UPDATE [SCHEMA_bar].t3 SET x=:x WHERE "
-                "[SCHEMA_bar].t3.x = :x_1"
+                "UPDATE __[SCHEMA_bar].t3 SET x=:x WHERE "
+                "__[SCHEMA_bar].t3.x = :x_1"
             ),
-            CompiledSQL("SELECT [SCHEMA__none].t1.x FROM [SCHEMA__none].t1"),
-            CompiledSQL("SELECT [SCHEMA_foo].t2.x FROM [SCHEMA_foo].t2"),
-            CompiledSQL("SELECT [SCHEMA_bar].t3.x FROM [SCHEMA_bar].t3"),
-            CompiledSQL("DELETE FROM [SCHEMA__none].t1"),
-            CompiledSQL("DELETE FROM [SCHEMA_foo].t2"),
-            CompiledSQL("DELETE FROM [SCHEMA_bar].t3"),
+            CompiledSQL(
+                "SELECT __[SCHEMA__none].t1.x FROM __[SCHEMA__none].t1"
+            ),
+            CompiledSQL("SELECT __[SCHEMA_foo].t2.x FROM __[SCHEMA_foo].t2"),
+            CompiledSQL("SELECT __[SCHEMA_bar].t3.x FROM __[SCHEMA_bar].t3"),
+            CompiledSQL("DELETE FROM __[SCHEMA__none].t1"),
+            CompiledSQL("DELETE FROM __[SCHEMA_foo].t2"),
+            CompiledSQL("DELETE FROM __[SCHEMA_bar].t3"),
         )
 
     def test_crud(self, plain_tables, connection):
@@ -1258,27 +1373,29 @@ class SchemaTranslateTest(fixtures.TestBase, testing.AssertsExecutionResults):
             conn.execute(t3.delete())
 
         asserter.assert_(
-            CompiledSQL("INSERT INTO [SCHEMA__none].t1 (x) VALUES (:x)"),
-            CompiledSQL("INSERT INTO [SCHEMA_foo].t2 (x) VALUES (:x)"),
-            CompiledSQL("INSERT INTO [SCHEMA_bar].t3 (x) VALUES (:x)"),
+            CompiledSQL("INSERT INTO __[SCHEMA__none].t1 (x) VALUES (:x)"),
+            CompiledSQL("INSERT INTO __[SCHEMA_foo].t2 (x) VALUES (:x)"),
+            CompiledSQL("INSERT INTO __[SCHEMA_bar].t3 (x) VALUES (:x)"),
             CompiledSQL(
-                "UPDATE [SCHEMA__none].t1 SET x=:x WHERE "
-                "[SCHEMA__none].t1.x = :x_1"
+                "UPDATE __[SCHEMA__none].t1 SET x=:x WHERE "
+                "__[SCHEMA__none].t1.x = :x_1"
             ),
             CompiledSQL(
-                "UPDATE [SCHEMA_foo].t2 SET x=:x WHERE "
-                "[SCHEMA_foo].t2.x = :x_1"
+                "UPDATE __[SCHEMA_foo].t2 SET x=:x WHERE "
+                "__[SCHEMA_foo].t2.x = :x_1"
             ),
             CompiledSQL(
-                "UPDATE [SCHEMA_bar].t3 SET x=:x WHERE "
-                "[SCHEMA_bar].t3.x = :x_1"
+                "UPDATE __[SCHEMA_bar].t3 SET x=:x WHERE "
+                "__[SCHEMA_bar].t3.x = :x_1"
             ),
-            CompiledSQL("SELECT [SCHEMA__none].t1.x FROM [SCHEMA__none].t1"),
-            CompiledSQL("SELECT [SCHEMA_foo].t2.x FROM [SCHEMA_foo].t2"),
-            CompiledSQL("SELECT [SCHEMA_bar].t3.x FROM [SCHEMA_bar].t3"),
-            CompiledSQL("DELETE FROM [SCHEMA__none].t1"),
-            CompiledSQL("DELETE FROM [SCHEMA_foo].t2"),
-            CompiledSQL("DELETE FROM [SCHEMA_bar].t3"),
+            CompiledSQL(
+                "SELECT __[SCHEMA__none].t1.x FROM __[SCHEMA__none].t1"
+            ),
+            CompiledSQL("SELECT __[SCHEMA_foo].t2.x FROM __[SCHEMA_foo].t2"),
+            CompiledSQL("SELECT __[SCHEMA_bar].t3.x FROM __[SCHEMA_bar].t3"),
+            CompiledSQL("DELETE FROM __[SCHEMA__none].t1"),
+            CompiledSQL("DELETE FROM __[SCHEMA_foo].t2"),
+            CompiledSQL("DELETE FROM __[SCHEMA_bar].t3"),
         )
 
     def test_via_engine(self, plain_tables, metadata):
@@ -1300,7 +1417,7 @@ class SchemaTranslateTest(fixtures.TestBase, testing.AssertsExecutionResults):
             with eng.connect() as conn:
                 conn.execute(select(t2.c.x))
         asserter.assert_(
-            CompiledSQL("SELECT [SCHEMA_foo].t2.x FROM [SCHEMA_foo].t2")
+            CompiledSQL("SELECT __[SCHEMA_foo].t2.x FROM __[SCHEMA_foo].t2")
         )
 
 
@@ -1550,7 +1667,8 @@ class EngineEventsTest(fixtures.TestBase):
                 # but sqlite file backend will also have independent
                 # connections here.
                 its_the_same_connection = (
-                    c1.connection.connection is c2.connection.connection
+                    c1.connection.dbapi_connection
+                    is c2.connection.dbapi_connection
                 )
                 c1.close()
                 c2.close()
@@ -1770,6 +1888,56 @@ class EngineEventsTest(fixtures.TestBase):
         ):
             with e1.connect() as conn:
                 conn.execute(select(literal("1")))
+
+    @testing.only_on("sqlite")
+    def test_dont_modify_statement_driversql(self, connection):
+        m1 = mock.Mock()
+
+        @event.listens_for(connection, "before_execute", retval=True)
+        def _modify(
+            conn, clauseelement, multiparams, params, execution_options
+        ):
+            m1.run_event()
+            return clauseelement.replace("hi", "there"), multiparams, params
+
+        # the event does not take effect for the "driver SQL" option
+        eq_(connection.exec_driver_sql("select 'hi'").scalar(), "hi")
+
+        # event is not called at all
+        eq_(m1.mock_calls, [])
+
+    @testing.combinations((True,), (False,), argnames="future")
+    @testing.only_on("sqlite")
+    def test_modify_statement_internal_driversql(self, connection, future):
+        m1 = mock.Mock()
+
+        @event.listens_for(connection, "before_execute", retval=True)
+        def _modify(
+            conn, clauseelement, multiparams, params, execution_options
+        ):
+            m1.run_event()
+            return clauseelement.replace("hi", "there"), multiparams, params
+
+        eq_(
+            connection._exec_driver_sql(
+                "select 'hi'", [], {}, {}, future=future
+            ).scalar(),
+            "hi" if future else "there",
+        )
+
+        if future:
+            eq_(m1.mock_calls, [])
+        else:
+            eq_(m1.mock_calls, [call.run_event()])
+
+    def test_modify_statement_clauseelement(self, connection):
+        @event.listens_for(connection, "before_execute", retval=True)
+        def _modify(
+            conn, clauseelement, multiparams, params, execution_options
+        ):
+            return select(literal_column("'there'")), multiparams, params
+
+        eq_(connection.scalar(select(literal_column("'hi'"))), "there")
 
     def test_argument_format_execute(self, testing_engine):
         def before_execute(
@@ -2023,6 +2191,30 @@ class EngineEventsTest(fixtures.TestBase):
         eng.dispose()
 
         eq_(canary.mock_calls, [call(eng), call(eng)])
+
+    @testing.requires.ad_hoc_engines
+    @testing.combinations(True, False, argnames="close")
+    def test_close_parameter(self, testing_engine, close):
+        eng = testing_engine(
+            options=dict(pool_size=1, max_overflow=0, poolclass=QueuePool)
+        )
+
+        conn = eng.connect()
+        dbapi_conn_one = conn.connection.dbapi_connection
+        conn.close()
+
+        eng_copy = copy.copy(eng)
+        eng_copy.dispose(close=close)
+        copy_conn = eng_copy.connect()
+        dbapi_conn_two = copy_conn.connection.dbapi_connection
+
+        is_not(dbapi_conn_one, dbapi_conn_two)
+
+        conn = eng.connect()
+        if close:
+            is_not(dbapi_conn_one, conn.connection.dbapi_connection)
+        else:
+            is_(dbapi_conn_one, conn.connection.dbapi_connection)
 
     def test_retval_flag(self):
         canary = []
@@ -2714,9 +2906,9 @@ class HandleErrorTest(fixtures.TestBase):
 
         for crec in crecs:
             if crec is target_crec or not set_to_false:
-                is_not(crec.connection, crec.get_connection())
+                is_not(crec.dbapi_connection, crec.get_connection())
             else:
-                is_(crec.connection, crec.get_connection())
+                is_(crec.dbapi_connection, crec.get_connection())
 
     def test_alter_invalidate_pool_to_false(self):
         self._test_alter_invalidate_pool_to_false(True)
@@ -3059,11 +3251,10 @@ class OnConnectTest(fixtures.TestBase):
             ),
         )
         eng = create_engine(u1, poolclass=QueuePool)
-        eq_(
-            eng.name, "sqlite"
-        )  # make sure other dialects aren't getting pulled in here
+        # make sure other dialects aren't getting pulled in here
+        eq_(eng.name, "sqlite")
         c = eng.connect()
-        dbapi_conn_one = c.connection.connection
+        dbapi_conn_one = c.connection.dbapi_connection
         c.close()
 
         eq_(
@@ -3079,7 +3270,7 @@ class OnConnectTest(fixtures.TestBase):
         )
 
         c2 = eng.connect()
-        dbapi_conn_two = c2.connection.connection
+        dbapi_conn_two = c2.connection.dbapi_connection
 
         is_not(dbapi_conn_one, dbapi_conn_two)
 
@@ -3344,7 +3535,7 @@ class DialectEventTest(fixtures.TestBase):
             eq_(conn.info["bap"], "two")
 
             # returned our mock connection
-            is_(conn.connection.connection, m1.our_connect())
+            is_(conn.connection.dbapi_connection, m1.our_connect())
 
     def test_connect_do_connect_info_there_after_recycle(self):
         # test that info is maintained after the do_connect()
@@ -3404,6 +3595,58 @@ class FutureExecuteTest(fixtures.FutureEngineMixin, fixtures.TablesTest):
             Column("user_name", VARCHAR(20)),
             test_needs_acid=True,
         )
+
+    def test_non_dict_mapping(self, connection):
+        """ensure arbitrary Mapping works for execute()"""
+
+        class NotADict(collections_abc.Mapping):
+            def __init__(self, _data):
+                self._data = _data
+
+            def __iter__(self):
+                return iter(self._data)
+
+            def __len__(self):
+                return len(self._data)
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def keys(self):
+                return self._data.keys()
+
+        nd = NotADict({"a": 10, "b": 15})
+        eq_(dict(nd), {"a": 10, "b": 15})
+
+        result = connection.execute(
+            select(
+                bindparam("a", type_=Integer), bindparam("b", type_=Integer)
+            ),
+            nd,
+        )
+        eq_(result.first(), (10, 15))
+
+    def test_row_works_as_mapping(self, connection):
+        """ensure the RowMapping object works as a parameter dictionary for
+        execute."""
+
+        result = connection.execute(
+            select(literal(10).label("a"), literal(15).label("b"))
+        )
+        row = result.first()
+        eq_(row, (10, 15))
+        eq_(row._mapping, {"a": 10, "b": 15})
+
+        result = connection.execute(
+            select(
+                bindparam("a", type_=Integer).label("a"),
+                bindparam("b", type_=Integer).label("b"),
+            ),
+            row._mapping,
+        )
+        row = result.first()
+        eq_(row, (10, 15))
+        eq_(row._mapping, {"a": 10, "b": 15})
 
     @testing.combinations(
         ({}, {}, {}),
@@ -3746,6 +3989,7 @@ class DialectDoesntSupportCachingTest(fixtures.TestBase):
 
         class MyDialect(SQLiteDialect_pysqlite):
             statement_compiler = MyCompiler
+            supports_statement_cache = False
 
         from sqlalchemy.dialects import registry
 

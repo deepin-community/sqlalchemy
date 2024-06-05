@@ -173,8 +173,8 @@ the ``id`` attribute::
    INSERT many rows at once while still being able to retrieve the primary key
    values.
 
-Identity Map
-^^^^^^^^^^^^
+Getting Objects by Primary Key from the Identity Map
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The primary key identity of the objects are significant to the :class:`_orm.Session`,
 as the objects are now linked to this identity in memory using a feature
@@ -213,6 +213,28 @@ behaviors and features:
 
     >>> session.commit()
     COMMIT
+
+The above operation will commit the transaction that was in progress.  The
+objects which we've dealt with are still :term:`attached` to the :class:`.Session`,
+which is a state they stay in until the :class:`.Session` is closed
+(which is introduced at :ref:`tutorial_orm_closing`).
+
+
+.. tip::
+
+  An important thing to note is that attributes on the objects that we just
+  worked with have been :term:`expired`, meaning, when we next access any
+  attributes on them, the :class:`.Session` will start a new transaction and
+  re-load their state. This option is sometimes problematic for both
+  performance reasons, or if one wishes to use the objects after closing the
+  :class:`.Session` (which is known as the :term:`detached` state), as they
+  will not have any state and will have no :class:`.Session` with which to load
+  that state, leading to "detached instance" errors. The behavior is
+  controllable using a parameter called :paramref:`.Session.expire_on_commit`.
+  More on this is at :ref:`tutorial_orm_closing`.
+
+
+
 
 .. _tutorial_orm_updating:
 
@@ -268,9 +290,7 @@ from this row and we will get our updated value back:
 
 .. sourcecode:: pycon+sql
 
-    >>> sandy_fullname = session.execute(
-    ...     select(User.fullname).where(User.id == 2)
-    ... ).scalar_one()
+    >>> sandy_fullname = session.execute(select(User.fullname).where(User.id == 2)).scalar_one()
     {opensql}UPDATE user_account SET fullname=? WHERE user_account.id = ?
     [...] ('Sandy Squirrel', 2)
     SELECT user_account.fullname
@@ -292,7 +312,7 @@ dirty::
 However note we are **still in a transaction** and our changes have not
 been pushed to the database's permanent storage.   Since Sandy's last name
 is in fact "Cheeks" not "Squirrel", we will repair this mistake later when
-we roll back the transction.  But first we'll make some more data changes.
+we roll back the transaction.  But first we'll make some more data changes.
 
 
 .. seealso::
@@ -314,9 +334,9 @@ a value in the ``User.name`` column:
 .. sourcecode:: pycon+sql
 
     >>> session.execute(
-    ...     update(User).
-    ...     where(User.name == "sandy").
-    ...     values(fullname="Sandy Squirrel Extraordinaire")
+    ...     update(User)
+    ...     .where(User.name == "sandy")
+    ...     .values(fullname="Sandy Squirrel Extraordinaire")
     ... )
     {opensql}UPDATE user_account SET fullname=? WHERE user_account.name = ?
     [...] ('Sandy Squirrel Extraordinaire', 'sandy'){stop}
@@ -503,13 +523,14 @@ and of course the database data is present again as well:
 
 .. sourcecode:: pycon+sql
 
-    {sql}>>> session.execute(select(User).where(User.name == 'patrick')).scalar_one() is patrick
+    {sql}>>> session.execute(select(User).where(User.name == "patrick")).scalar_one() is patrick
     SELECT user_account.id, user_account.name, user_account.fullname
     FROM user_account
     WHERE user_account.name = ?
     [...] ('patrick',){stop}
     True
 
+.. _tutorial_orm_closing:
 
 Closing a Session
 ------------------

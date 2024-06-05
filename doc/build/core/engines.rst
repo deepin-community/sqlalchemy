@@ -22,16 +22,20 @@ Creating an engine is just a matter of issuing a single call,
 :func:`_sa.create_engine()`::
 
     from sqlalchemy import create_engine
-    engine = create_engine('postgresql://scott:tiger@localhost:5432/mydatabase')
+
+    engine = create_engine("postgresql://scott:tiger@localhost:5432/mydatabase")
 
 The above engine creates a :class:`.Dialect` object tailored towards
-PostgreSQL, as well as a :class:`_pool.Pool` object which will establish a DBAPI
-connection at ``localhost:5432`` when a connection request is first received.
-Note that the :class:`_engine.Engine` and its underlying :class:`_pool.Pool` do **not**
-establish the first actual DBAPI connection until the :meth:`_engine.Engine.connect`
-method is called, or an operation which is dependent on this method such as
-:meth:`_engine.Engine.execute` is invoked. In this way, :class:`_engine.Engine` and
-:class:`_pool.Pool` can be said to have a *lazy initialization* behavior.
+PostgreSQL, as well as a :class:`_pool.Pool` object which will establish a
+DBAPI connection at ``localhost:5432`` when a connection request is first
+received. Note that the :class:`_engine.Engine` and its underlying
+:class:`_pool.Pool` do **not** establish the first actual DBAPI connection
+until the :meth:`_engine.Engine.connect` or :meth:`_engine.Engine.begin`
+methods are called.  Either of these methods may also be invoked by other
+SQLAlchemy :class:`_engine.Engine` dependent objects such as the ORM
+:class:`_orm.Session` object when they first require database connectivity.
+In this way, :class:`_engine.Engine` and :class:`_pool.Pool` can be said to
+have a *lazy initialization* behavior.
 
 The :class:`_engine.Engine`, once created, can either be used directly to interact with the database,
 or can be passed to a :class:`.Session` object to work with the ORM.   This section
@@ -52,15 +56,19 @@ See the section :ref:`dialect_toplevel` for information on the various backends 
 
 .. _database_urls:
 
-Database Urls
+Database URLs
 =============
 
-The :func:`_sa.create_engine` function produces an :class:`_engine.Engine` object based
-on a URL.  These URLs follow `RFC-1738
-<https://rfc.net/rfc1738.html>`_, and usually can include username, password,
-hostname, database name as well as optional keyword arguments for additional configuration.
-In some cases a file path is accepted, and in others a "data source name" replaces
-the "host" and "database" portions.  The typical form of a database URL is::
+The :func:`_sa.create_engine` function produces an :class:`_engine.Engine`
+object based on a URL. The format of the URL generally follows `RFC-1738
+<https://www.ietf.org/rfc/rfc1738.txt>`_, with some exceptions, including that
+underscores, not dashes or periods, are accepted within the "scheme" portion.
+URLs typically include username, password, hostname, database name fields, as
+well as optional keyword arguments for additional configuration. In some cases
+a file path is accepted, and in others a "data source name" replaces the "host"
+and "database" portions. The typical form of a database URL is:
+
+.. sourcecode:: none
 
     dialect+driver://username:password@host:port/database
 
@@ -71,87 +79,151 @@ the database using all lowercase letters. If not specified, a "default" DBAPI
 will be imported if available - this default is typically the most widely
 known driver available for that backend.
 
-As the URL is like any other URL, **special characters such as those that may
-be used in the password need to be URL encoded to be parsed correctly.**. Below
-is an example of a URL that includes the password ``"kx%jj5/g"``, where the
-percent sign and slash characters are represented as ``%25`` and ``%2F``,
-respectively::
+Escaping Special Characters such as @ signs in Passwords
+----------------------------------------------------------
 
-  postgresql+pg8000://dbuser:kx%25jj5%2Fg@pghost10/appdb
+When constructing a fully formed URL string to pass to
+:func:`_sa.create_engine`, **special characters such as those that may
+be used in the user and password need to be URL encoded to be parsed correctly.**.
+**This includes the @ sign**.
+
+Below is an example of a URL that includes the password ``"kx@jj5/g"``, where the
+"at" sign and slash characters are represented as ``%40`` and ``%2F``,
+respectively:
+
+.. sourcecode:: none
+
+    postgresql+pg8000://dbuser:kx%40jj5%2Fg@pghost10/appdb
 
 
 The encoding for the above password can be generated using
 `urllib.parse <https://docs.python.org/3/library/urllib.parse.html>`_::
 
   >>> import urllib.parse
-  >>> urllib.parse.quote_plus("kx%jj5/g")
-  'kx%25jj5%2Fg'
+  >>> urllib.parse.quote_plus("kx@jj5/g")
+  'kx%40jj5%2Fg'
+
+The URL may then be passed as a string to :func:`_sa.create_engine`::
+
+    from sqlalchemy import create_engine
+
+    engine = create_engine("postgresql+pg8000://dbuser:kx%40jj5%2Fg@pghost10/appdb")
+
+As an alternative to escaping special characters in order to create a complete
+URL string, the object passed to :func:`_sa.create_engine` may instead be an
+instance of the :class:`.URL` object, which bypasses the parsing
+phase and can accommodate for unescaped strings directly.  See the next
+section for an example.
+
+.. versionchanged:: 1.4
+
+    Support for ``@`` signs in hostnames and database names has been
+    fixed.   As a side effect of this fix, ``@`` signs in passwords must be
+    escaped.
+
+Creating URLs Programmatically
+-------------------------------
+
+The value passed to :func:`_sa.create_engine` may be an instance of
+:class:`.URL`, instead of a plain string, which bypasses the need for string
+parsing to be used, and therefore does not need an escaped URL string to be
+provided.
+
+The :class:`.URL` object is created using the :meth:`_engine.URL.create()`
+constructor method, passing all fields individually.   Special characters
+such as those within passwords may be passed without any modification::
+
+    from sqlalchemy.engine import URL
+
+    url_object = URL.create(
+        "postgresql+pg8000",
+        username="dbuser",
+        password="kx@jj5/g",  # plain (unescaped) text
+        host="pghost10",
+        database="appdb",
+    )
+
+The constructed :class:`.URL` object may then be passed directly to
+:func:`_sa.create_engine` in place of a string argument::
+
+    from sqlalchemy import create_engine
+
+    engine = create_engine(url_object)
+
+.. seealso::
+
+    :class:`.URL`
+
+    :meth:`.URL.create`
+
+Backend-Specific URLs
+----------------------
 
 Examples for common connection styles follow below.  For a full index of
 detailed information on all included dialects as well as links to third-party
 dialects, see :ref:`dialect_toplevel`.
 
 PostgreSQL
-----------
+^^^^^^^^^^
 
-The PostgreSQL dialect uses psycopg2 as the default DBAPI.  pg8000 is
-also available as a pure-Python substitute::
+The PostgreSQL dialect uses psycopg2 as the default DBAPI.  Other
+PostgreSQL DBAPIs include pg8000 and asyncpg::
 
     # default
-    engine = create_engine('postgresql://scott:tiger@localhost/mydatabase')
+    engine = create_engine("postgresql://scott:tiger@localhost/mydatabase")
 
     # psycopg2
-    engine = create_engine('postgresql+psycopg2://scott:tiger@localhost/mydatabase')
+    engine = create_engine("postgresql+psycopg2://scott:tiger@localhost/mydatabase")
 
     # pg8000
-    engine = create_engine('postgresql+pg8000://scott:tiger@localhost/mydatabase')
+    engine = create_engine("postgresql+pg8000://scott:tiger@localhost/mydatabase")
 
 More notes on connecting to PostgreSQL at :ref:`postgresql_toplevel`.
 
 MySQL
------
+^^^^^^^^^^
 
-The MySQL dialect uses mysql-python as the default DBAPI.  There are many
-MySQL DBAPIs available, including MySQL-connector-python and OurSQL::
+The MySQL dialect uses mysqlclient as the default DBAPI.  There are other
+MySQL DBAPIs available, including PyMySQL::
 
     # default
-    engine = create_engine('mysql://scott:tiger@localhost/foo')
+    engine = create_engine("mysql://scott:tiger@localhost/foo")
 
     # mysqlclient (a maintained fork of MySQL-Python)
-    engine = create_engine('mysql+mysqldb://scott:tiger@localhost/foo')
+    engine = create_engine("mysql+mysqldb://scott:tiger@localhost/foo")
 
     # PyMySQL
-    engine = create_engine('mysql+pymysql://scott:tiger@localhost/foo')
+    engine = create_engine("mysql+pymysql://scott:tiger@localhost/foo")
 
 More notes on connecting to MySQL at :ref:`mysql_toplevel`.
 
 Oracle
-------
+^^^^^^^^^^
 
 The Oracle dialect uses cx_oracle as the default DBAPI::
 
-    engine = create_engine('oracle://scott:tiger@127.0.0.1:1521/sidname')
+    engine = create_engine("oracle://scott:tiger@127.0.0.1:1521/sidname")
 
-    engine = create_engine('oracle+cx_oracle://scott:tiger@tnsname')
+    engine = create_engine("oracle+cx_oracle://scott:tiger@tnsname")
 
 More notes on connecting to Oracle at :ref:`oracle_toplevel`.
 
 Microsoft SQL Server
---------------------
+^^^^^^^^^^^^^^^^^^^^
 
 The SQL Server dialect uses pyodbc as the default DBAPI.  pymssql is
 also available::
 
     # pyodbc
-    engine = create_engine('mssql+pyodbc://scott:tiger@mydsn')
+    engine = create_engine("mssql+pyodbc://scott:tiger@mydsn")
 
     # pymssql
-    engine = create_engine('mssql+pymssql://scott:tiger@hostname:port/dbname')
+    engine = create_engine("mssql+pymssql://scott:tiger@hostname:port/dbname")
 
 More notes on connecting to SQL Server at :ref:`mssql_toplevel`.
 
 SQLite
-------
+^^^^^^^
 
 SQLite connects to file-based databases, using the Python built-in
 module ``sqlite3`` by default.
@@ -162,27 +234,27 @@ For a relative file path, this requires three slashes::
 
     # sqlite://<nohostname>/<path>
     # where <path> is relative:
-    engine = create_engine('sqlite:///foo.db')
+    engine = create_engine("sqlite:///foo.db")
 
 And for an absolute file path, the three slashes are followed by the absolute path::
 
     # Unix/Mac - 4 initial slashes in total
-    engine = create_engine('sqlite:////absolute/path/to/foo.db')
+    engine = create_engine("sqlite:////absolute/path/to/foo.db")
 
     # Windows
-    engine = create_engine('sqlite:///C:\\path\\to\\foo.db')
+    engine = create_engine("sqlite:///C:\\path\\to\\foo.db")
 
     # Windows alternative using raw string
-    engine = create_engine(r'sqlite:///C:\path\to\foo.db')
+    engine = create_engine(r"sqlite:///C:\path\to\foo.db")
 
 To use a SQLite ``:memory:`` database, specify an empty URL::
 
-    engine = create_engine('sqlite://')
+    engine = create_engine("sqlite://")
 
 More notes on connecting to SQLite at :ref:`sqlite_toplevel`.
 
 Others
-------
+^^^^^^
 
 See :ref:`dialect_toplevel`, the top-level page for all additional dialect
 documentation.
@@ -243,7 +315,9 @@ Engine Creation API
         for keys and either strings or tuples of strings for values, e.g.::
 
             >>> from sqlalchemy.engine import make_url
-            >>> url = make_url("postgresql://user:pass@host/dbname?alt_host=host1&alt_host=host2&ssl_cipher=%2Fpath%2Fto%2Fcrt")
+            >>> url = make_url(
+            ...     "postgresql://user:pass@host/dbname?alt_host=host1&alt_host=host2&ssl_cipher=%2Fpath%2Fto%2Fcrt"
+            ... )
             >>> url.query
             immutabledict({'alt_host': ('host1', 'host2'), 'ssl_cipher': '/path/to/crt'})
 
@@ -315,9 +389,7 @@ often specified in the query string of the URL directly. A common example of
 this is DBAPIs that accept an argument ``encoding`` for character encodings,
 such as most MySQL DBAPIs::
 
-    engine = create_engine(
-        "mysql+pymysql://user:pass@host/test?charset=utf8mb4"
-    )
+    engine = create_engine("mysql+pymysql://user:pass@host/test?charset=utf8mb4")
 
 The advantage of using the query string is that additional DBAPI options may be
 specified in configuration files in a manner that's portable to the DBAPI
@@ -336,7 +408,9 @@ supported at this level.
   method directly as follows::
 
     >>> from sqlalchemy import create_engine
-    >>> engine = create_engine("mysql+pymysql://some_user:some_pass@some_host/test?charset=utf8mb4")
+    >>> engine = create_engine(
+    ...     "mysql+pymysql://some_user:some_pass@some_host/test?charset=utf8mb4"
+    ... )
     >>> args, kwargs = engine.dialect.create_connect_args(engine.url)
     >>> args, kwargs
     ([], {'host': 'some_host', 'database': 'test', 'user': 'some_user', 'password': 'some_pass', 'charset': 'utf8mb4', 'client_flag': 2})
@@ -361,14 +435,14 @@ underlying implementation the connection::
 
     engine = create_engine(
         "postgresql://user:pass@hostname/dbname",
-        connect_args={"connection_factory": MyConnectionFactory}
+        connect_args={"connection_factory": MyConnectionFactory},
     )
 
 Another example is the pyodbc "timeout" parameter::
 
     engine = create_engine(
-      "mssql+pyodbc://user:pass@sqlsrvr?driver=ODBC+Driver+13+for+SQL+Server",
-      connect_args={"timeout": 30}
+        "mssql+pyodbc://user:pass@sqlsrvr?driver=ODBC+Driver+13+for+SQL+Server",
+        connect_args={"timeout": 30},
     )
 
 The above example also illustrates that both URL "query string" parameters as
@@ -389,9 +463,10 @@ collections can then be modified in place to alter how they are used::
 
     engine = create_engine("postgresql://user:pass@hostname/dbname")
 
+
     @event.listens_for(engine, "do_connect")
     def receive_do_connect(dialect, conn_rec, cargs, cparams):
-        cparams['connection_factory'] = MyConnectionFactory
+        cparams["connection_factory"] = MyConnectionFactory
 
 .. _engines_dynamic_tokens:
 
@@ -408,9 +483,10 @@ parameter, this could be implemented as::
 
     engine = create_engine("postgresql://user@hostname/dbname")
 
+
     @event.listens_for(engine, "do_connect")
     def provide_token(dialect, conn_rec, cargs, cparams):
-        cparams['token'] = get_authentication_token()
+        cparams["token"] = get_authentication_token()
 
 .. seealso::
 
@@ -429,16 +505,14 @@ SQLAlchemy::
 
     from sqlalchemy import event
 
-    engine = create_engine(
-        "postgresql://user:pass@hostname/dbname"
-    )
+    engine = create_engine("postgresql://user:pass@hostname/dbname")
+
 
     @event.listens_for(engine, "connect")
     def connect(dbapi_connection, connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("SET some session variables")
-        cursor.close()
-
+        cursor_obj = dbapi_connection.cursor()
+        cursor_obj.execute("SET some session variables")
+        cursor_obj.close()
 
 Fully Replacing the DBAPI ``connect()`` function
 ------------------------------------------------
@@ -449,9 +523,8 @@ and returning it::
 
     from sqlalchemy import event
 
-    engine = create_engine(
-        "postgresql://user:pass@hostname/dbname"
-    )
+    engine = create_engine("postgresql://user:pass@hostname/dbname")
+
 
     @event.listens_for(engine, "do_connect")
     def receive_do_connect(dialect, conn_rec, cargs, cparams):
@@ -511,7 +584,7 @@ For example, to log SQL queries using Python logging instead of the
     import logging
 
     logging.basicConfig()
-    logging.getLogger('sqlalchemy.engine').setLevel(logging.INFO)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
 
 By default, the log level is set to ``logging.WARN`` within the entire
 ``sqlalchemy`` namespace so that no log operations occur, even within an
@@ -539,10 +612,9 @@ parameters are a shortcut to immediate logging to ``sys.stdout``::
 
 
     >>> from sqlalchemy import create_engine, text
-    >>> e = create_engine("sqlite://", echo=True, echo_pool='debug')
+    >>> e = create_engine("sqlite://", echo=True, echo_pool="debug")
     >>> with e.connect() as conn:
-    ...    print(conn.scalar(text("select 'hi'")))
-    ...
+    ...     print(conn.scalar(text("select 'hi'")))
     2020-10-24 12:54:57,701 DEBUG sqlalchemy.pool.impl.SingletonThreadPool Created new connection <sqlite3.Connection object at 0x7f287819ac60>
     2020-10-24 12:54:57,701 DEBUG sqlalchemy.pool.impl.SingletonThreadPool Connection <sqlite3.Connection object at 0x7f287819ac60> checked out from pool
     2020-10-24 12:54:57,702 INFO sqlalchemy.engine.Engine select 'hi'
@@ -554,6 +626,7 @@ parameters are a shortcut to immediate logging to ``sys.stdout``::
 Use of these flags is roughly equivalent to::
 
     import logging
+
     logging.basicConfig()
     logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
     logging.getLogger("sqlalchemy.pool").setLevel(logging.DEBUG)
@@ -577,10 +650,9 @@ string. To set this to a specific name, use the
 
     >>> from sqlalchemy import create_engine
     >>> from sqlalchemy import text
-    >>> e = create_engine("sqlite://", echo=True, logging_name='myengine')
+    >>> e = create_engine("sqlite://", echo=True, logging_name="myengine")
     >>> with e.connect() as conn:
     ...     conn.execute(text("select 'hi'"))
-    ...
     2020-10-24 12:47:04,291 INFO sqlalchemy.engine.Engine.myengine select 'hi'
     2020-10-24 12:47:04,292 INFO sqlalchemy.engine.Engine.myengine ()
 
@@ -649,7 +721,6 @@ these parameters from being logged for privacy purposes, enable the
     >>> e = create_engine("sqlite://", echo=True, hide_parameters=True)
     >>> with e.connect() as conn:
     ...     conn.execute(text("select :some_private_name"), {"some_private_name": "pii"})
-    ...
     2020-10-24 12:48:32,808 INFO sqlalchemy.engine.Engine select ?
     2020-10-24 12:48:32,808 INFO sqlalchemy.engine.Engine [SQL parameters hidden due to hide_parameters=True]
 

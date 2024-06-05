@@ -9,6 +9,7 @@ from sqlalchemy import CheckConstraint
 from sqlalchemy import CLOB
 from sqlalchemy import Column
 from sqlalchemy import Computed
+from sqlalchemy import create_engine
 from sqlalchemy import DATE
 from sqlalchemy import Date
 from sqlalchemy import DATETIME
@@ -53,31 +54,94 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.dialects.mysql import match
 from sqlalchemy.sql import column
 from sqlalchemy.sql import table
+from sqlalchemy.sql.expression import bindparam
 from sqlalchemy.sql.expression import literal_column
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import expect_warnings
 from sqlalchemy.testing import fixtures
+from sqlalchemy.testing import mock
 
 
-class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
+class ReservedWordFixture(AssertsCompiledSQL):
+    @testing.fixture()
+    def mysql_mariadb_reserved_words(self):
+        table = Table(
+            "rw_table",
+            MetaData(),
+            Column("mysql_reserved", Integer),
+            Column("mdb_mysql_reserved", Integer),
+            Column("mdb_reserved", Integer),
+        )
+
+        expected_mysql = (
+            "SELECT rw_table.`mysql_reserved`, "
+            "rw_table.`mdb_mysql_reserved`, "
+            "rw_table.mdb_reserved FROM rw_table"
+        )
+        expected_mdb = (
+            "SELECT rw_table.mysql_reserved, "
+            "rw_table.`mdb_mysql_reserved`, "
+            "rw_table.`mdb_reserved` FROM rw_table"
+        )
+
+        from sqlalchemy.dialects.mysql import reserved_words
+
+        reserved_words.RESERVED_WORDS_MARIADB.add("mdb_reserved")
+        reserved_words.RESERVED_WORDS_MYSQL.add("mysql_reserved")
+        reserved_words.RESERVED_WORDS_MYSQL.add("mdb_mysql_reserved")
+        reserved_words.RESERVED_WORDS_MARIADB.add("mdb_mysql_reserved")
+
+        try:
+            yield table, expected_mysql, expected_mdb
+        finally:
+
+            reserved_words.RESERVED_WORDS_MARIADB.discard("mdb_reserved")
+            reserved_words.RESERVED_WORDS_MYSQL.discard("mysql_reserved")
+            reserved_words.RESERVED_WORDS_MYSQL.discard("mdb_mysql_reserved")
+            reserved_words.RESERVED_WORDS_MARIADB.discard("mdb_mysql_reserved")
+
+
+class CompileTest(ReservedWordFixture, fixtures.TestBase, AssertsCompiledSQL):
 
     __dialect__ = mysql.dialect()
 
-    def test_reserved_words(self):
-        table = Table(
-            "mysql_table",
-            MetaData(),
-            Column("col1", Integer),
-            Column("master_ssl_verify_server_cert", Integer),
-        )
-        x = select(table.c.col1, table.c.master_ssl_verify_server_cert)
+    @testing.combinations(
+        ("mariadb", True),
+        ("mysql", False),
+        (mysql.dialect(), False),
+        (mysql.dialect(is_mariadb=True), True),
+        (
+            create_engine(
+                "mysql+pymysql://", module=mock.Mock(paramstyle="format")
+            ).dialect,
+            False,
+        ),
+        (
+            create_engine(
+                "mariadb+pymysql://", module=mock.Mock(paramstyle="format")
+            ).dialect,
+            True,
+        ),
+        argnames="dialect, expect_mariadb",
+    )
+    def test_reserved_words_mysql_vs_mariadb(
+        self, dialect, expect_mariadb, mysql_mariadb_reserved_words
+    ):
+        """test #7167 - compiler level
 
+        We want to make sure that the "is mariadb" flag as well as the
+        correct identifier preparer are set up for dialects no matter how they
+        determine their "is_mariadb" flag.
+
+        """
+
+        table, expected_mysql, expected_mdb = mysql_mariadb_reserved_words
         self.assert_compile(
-            x,
-            "SELECT mysql_table.col1, "
-            "mysql_table.`master_ssl_verify_server_cert` FROM mysql_table",
+            select(table),
+            expected_mdb if expect_mariadb else expected_mysql,
+            dialect=dialect,
         )
 
     def test_create_index_simple(self):
@@ -767,7 +831,7 @@ class SQLTest(fixtures.TestBase, AssertsCompiledSQL):
                 "SELECT EXTRACT(%s FROM t.col1) AS anon_1 FROM t" % field,
             )
 
-        # millsecondS to millisecond
+        # milliseconds to millisecond
         self.assert_compile(
             select(extract("milliseconds", t.c.col1)),
             "SELECT EXTRACT(millisecond FROM t.col1) AS anon_1 FROM t",
@@ -1046,12 +1110,12 @@ class InsertOnDuplicateTest(fixtures.TestBase, AssertsCompiledSQL):
         )
         stmt = stmt.on_duplicate_key_update(
             bar=func.coalesce(stmt.inserted.bar),
-            baz=stmt.inserted.baz + "some literal",
+            baz=stmt.inserted.baz + "some literal" + stmt.inserted.bar,
         )
         expected_sql = (
             "INSERT INTO foos (id, bar) VALUES (%s, %s), (%s, %s) ON "
             "DUPLICATE KEY UPDATE bar = coalesce(VALUES(bar)), "
-            "baz = (concat(VALUES(baz), %s))"
+            "baz = (concat(concat(VALUES(baz), %s), VALUES(bar)))"
         )
         self.assert_compile(
             stmt,
@@ -1146,18 +1210,25 @@ class RegexpCommon(testing.AssertsCompiledSQL):
 class RegexpTestMySql(fixtures.TestBase, RegexpCommon):
     __dialect__ = "mysql"
 
+    def test_regexp_match_flags_safestring(self):
+        self.assert_compile(
+            self.table.c.myid.regexp_match("pattern", flags="i'g"),
+            "REGEXP_LIKE(mytable.myid, %s, 'i''g')",
+            checkpositional=("pattern",),
+        )
+
     def test_regexp_match_flags(self):
         self.assert_compile(
             self.table.c.myid.regexp_match("pattern", flags="ig"),
-            "REGEXP_LIKE(mytable.myid, %s, %s)",
-            checkpositional=("pattern", "ig"),
+            "REGEXP_LIKE(mytable.myid, %s, 'ig')",
+            checkpositional=("pattern",),
         )
 
     def test_not_regexp_match_flags(self):
         self.assert_compile(
             ~self.table.c.myid.regexp_match("pattern", flags="ig"),
-            "NOT REGEXP_LIKE(mytable.myid, %s, %s)",
-            checkpositional=("pattern", "ig"),
+            "NOT REGEXP_LIKE(mytable.myid, %s, 'ig')",
+            checkpositional=("pattern",),
         )
 
     def test_regexp_replace_flags(self):
@@ -1165,26 +1236,42 @@ class RegexpTestMySql(fixtures.TestBase, RegexpCommon):
             self.table.c.myid.regexp_replace(
                 "pattern", "replacement", flags="ig"
             ),
-            "REGEXP_REPLACE(mytable.myid, %s, %s, %s)",
-            checkpositional=("pattern", "replacement", "ig"),
+            "REGEXP_REPLACE(mytable.myid, %s, %s, 'ig')",
+            checkpositional=("pattern", "replacement"),
+        )
+
+    def test_regexp_replace_flags_safestring(self):
+        self.assert_compile(
+            self.table.c.myid.regexp_replace(
+                "pattern", "replacement", flags="i'g"
+            ),
+            "REGEXP_REPLACE(mytable.myid, %s, %s, 'i''g')",
+            checkpositional=("pattern", "replacement"),
         )
 
 
 class RegexpTestMariaDb(fixtures.TestBase, RegexpCommon):
     __dialect__ = "mariadb"
 
+    def test_regexp_match_flags_safestring(self):
+        self.assert_compile(
+            self.table.c.myid.regexp_match("pattern", flags="i'g"),
+            "mytable.myid REGEXP CONCAT('(?', 'i''g', ')', %s)",
+            checkpositional=("pattern",),
+        )
+
     def test_regexp_match_flags(self):
         self.assert_compile(
             self.table.c.myid.regexp_match("pattern", flags="ig"),
-            "mytable.myid REGEXP CONCAT('(?', %s, ')', %s)",
-            checkpositional=("ig", "pattern"),
+            "mytable.myid REGEXP CONCAT('(?', 'ig', ')', %s)",
+            checkpositional=("pattern",),
         )
 
     def test_not_regexp_match_flags(self):
         self.assert_compile(
             ~self.table.c.myid.regexp_match("pattern", flags="ig"),
-            "mytable.myid NOT REGEXP CONCAT('(?', %s, ')', %s)",
-            checkpositional=("ig", "pattern"),
+            "mytable.myid NOT REGEXP CONCAT('(?', 'ig', ')', %s)",
+            checkpositional=("pattern",),
         )
 
     def test_regexp_replace_flags(self):
@@ -1192,8 +1279,8 @@ class RegexpTestMariaDb(fixtures.TestBase, RegexpCommon):
             self.table.c.myid.regexp_replace(
                 "pattern", "replacement", flags="ig"
             ),
-            "REGEXP_REPLACE(mytable.myid, CONCAT('(?', %s, ')', %s), %s)",
-            checkpositional=("ig", "pattern", "replacement"),
+            "REGEXP_REPLACE(mytable.myid, CONCAT('(?', 'ig', ')', %s), %s)",
+            checkpositional=("pattern", "replacement"),
         )
 
 
@@ -1281,6 +1368,26 @@ class MatchExpressionTest(fixtures.TestBase, AssertsCompiledSQL):
         expr = match(firstname, lastname, against="Firstname Lastname")
 
         expr = case(expr)
+        self.assert_compile(expr, expected)
+
+    @testing.combinations(
+        (bindparam("against_expr"), "%s"),
+        (
+            column("some col") + column("some other col"),
+            "`some col` + `some other col`",
+        ),
+        (column("some col") + bindparam("against_expr"), "`some col` + %s"),
+    )
+    def test_match_expression_against_expr(self, against, expected_segment):
+        firstname = self.match_table.c.firstname
+        lastname = self.match_table.c.lastname
+
+        expr = match(firstname, lastname, against=against)
+
+        expected = (
+            "MATCH (user.firstname, user.lastname) AGAINST (%s)"
+            % expected_segment
+        )
         self.assert_compile(expr, expected)
 
     def test_cols_required(self):

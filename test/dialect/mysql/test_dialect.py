@@ -5,10 +5,12 @@ import datetime
 from sqlalchemy import bindparam
 from sqlalchemy import Column
 from sqlalchemy import DateTime
+from sqlalchemy import event
 from sqlalchemy import exc
 from sqlalchemy import func
 from sqlalchemy import Integer
 from sqlalchemy import MetaData
+from sqlalchemy import select
 from sqlalchemy import Table
 from sqlalchemy import testing
 from sqlalchemy.dialects import mysql
@@ -18,22 +20,76 @@ from sqlalchemy.testing import engines
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import expect_warnings
 from sqlalchemy.testing import fixtures
+from sqlalchemy.testing import in_
 from sqlalchemy.testing import is_
 from sqlalchemy.testing import mock
+from sqlalchemy.testing.assertions import AssertsCompiledSQL
+from .test_compiler import ReservedWordFixture
 from ...engine import test_deprecations
 
 
-class BackendDialectTest(fixtures.TestBase):
+class BackendDialectTest(
+    ReservedWordFixture, fixtures.TestBase, AssertsCompiledSQL
+):
     __backend__ = True
     __only_on__ = "mysql", "mariadb"
 
+    @testing.fixture
+    def mysql_version_dialect(self, testing_engine):
+        """yield a MySQL engine that will simulate a specific version.
+
+        patches out various methods to not fail
+
+        """
+        engine = testing_engine()
+        _server_version = [None]
+        with mock.patch.object(
+            engine.dialect,
+            "_get_server_version_info",
+            lambda conn: engine.dialect._parse_server_version(
+                _server_version[0]
+            ),
+        ), mock.patch.object(
+            engine.dialect, "_set_mariadb", lambda *arg: None
+        ), mock.patch.object(
+            engine.dialect,
+            "get_isolation_level",
+            lambda *arg: "REPEATABLE READ",
+        ):
+
+            def go(server_version):
+                _server_version[0] = server_version
+                return engine
+
+            yield go
+
+    def test_reserved_words_mysql_vs_mariadb(
+        self, mysql_mariadb_reserved_words
+    ):
+        """test #7167 - real backend level
+
+        We want to make sure that the "is mariadb" flag as well as the
+        correct identifier preparer are set up for dialects no matter how they
+        determine their "is_mariadb" flag.
+
+        """
+
+        dialect = testing.db.dialect
+        expect_mariadb = testing.only_on("mariadb").enabled
+
+        table, expected_mysql, expected_mdb = mysql_mariadb_reserved_words
+        self.assert_compile(
+            select(table),
+            expected_mdb if expect_mariadb else expected_mysql,
+            dialect=dialect,
+        )
+
     def test_no_show_variables(self):
-        from sqlalchemy.testing import mock
 
         engine = engines.testing_engine()
 
         def my_execute(self, statement, *args, **kw):
-            if statement.startswith("SHOW VARIABLES"):
+            if statement.startswith("SELECT @@"):
                 statement = "SELECT 1 FROM DUAL WHERE 1=0"
             return real_exec(self, statement, *args, **kw)
 
@@ -48,7 +104,6 @@ class BackendDialectTest(fixtures.TestBase):
                 engine.connect()
 
     def test_no_default_isolation_level(self):
-        from sqlalchemy.testing import mock
 
         engine = engines.testing_engine()
 
@@ -73,6 +128,43 @@ class BackendDialectTest(fixtures.TestBase):
             ):
                 engine.connect()
 
+    @testing.combinations(
+        "10.5.12-MariaDB", "5.6.49", "5.0.2", argnames="server_version"
+    )
+    def test_variable_fetch(self, mysql_version_dialect, server_version):
+        """test #7518"""
+        engine = mysql_version_dialect(server_version)
+
+        fetches = []
+
+        # the initialize() connection does not seem to use engine-level events.
+        # not changing that here
+
+        @event.listens_for(engine, "do_execute_no_params")
+        @event.listens_for(engine, "do_execute")
+        def do_execute_no_params(cursor, statement, *arg):
+            if statement.startswith("SHOW VARIABLES") or statement.startswith(
+                "SELECT @@"
+            ):
+                fetches.append(statement)
+            return None
+
+        engine.connect()
+
+        if server_version == "5.0.2":
+            eq_(
+                fetches,
+                [
+                    "SHOW VARIABLES LIKE 'sql_mode'",
+                    "SHOW VARIABLES LIKE 'lower_case_table_names'",
+                ],
+            )
+        else:
+            eq_(
+                fetches,
+                ["SELECT @@sql_mode", "SELECT @@lower_case_table_names"],
+            )
+
     def test_autocommit_isolation_level(self):
         c = testing.db.connect().execution_options(
             isolation_level="AUTOCOMMIT"
@@ -95,6 +187,8 @@ class BackendDialectTest(fixtures.TestBase):
 
 
 class DialectTest(fixtures.TestBase):
+    __backend__ = True
+
     @testing.combinations(
         (None, "cONnection was kILLEd", "InternalError", "pymysql", True),
         (None, "cONnection aLREady closed", "InternalError", "pymysql", True),
@@ -105,6 +199,10 @@ class DialectTest(fixtures.TestBase):
         (2006, "foo", "OperationalError", "pymysql", True),
         (2007, "foo", "OperationalError", "mysqldb", False),
         (2007, "foo", "OperationalError", "pymysql", False),
+        (4031, "foo", "OperationalError", "mysqldb", True),
+        (4031, "foo", "OperationalError", "pymysql", True),
+        (4032, "foo", "OperationalError", "mysqldb", False),
+        (4032, "foo", "OperationalError", "pymysql", False),
     )
     def test_is_disconnect(
         self, arg0, message, exc_cls_name, dialect_name, is_disconnect
@@ -250,14 +348,31 @@ class DialectTest(fixtures.TestBase):
             "mariadb+pymysql",
         ]
     )
-    def test_special_encodings(self):
+    @testing.combinations(
+        ("utf8mb4",),
+        ("utf8",),
+    )
+    def test_special_encodings(self, enc):
 
-        for enc in ["utf8mb4", "utf8"]:
-            eng = engines.testing_engine(
-                options={"connect_args": {"charset": enc, "use_unicode": 0}}
-            )
-            conn = eng.connect()
-            eq_(conn.dialect._connection_charset, enc)
+        eng = engines.testing_engine(
+            options={"connect_args": {"charset": enc, "use_unicode": 0}}
+        )
+        conn = eng.connect()
+
+        detected = conn.dialect._connection_charset
+        if enc == "utf8mb4":
+            eq_(detected, enc)
+        else:
+            in_(detected, ["utf8", "utf8mb3"])
+
+    @testing.only_on("mariadb+mariadbconnector")
+    def test_mariadb_connector_special_encodings(self):
+
+        eng = engines.testing_engine()
+        conn = eng.connect()
+
+        detected = conn.dialect._connection_charset
+        eq_(detected, "utf8mb4")
 
 
 class ParseVersionTest(fixtures.TestBase):

@@ -17,12 +17,14 @@ from sqlalchemy import text
 from sqlalchemy import update
 from sqlalchemy.orm import backref
 from sqlalchemy.orm import joinedload
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import synonym
 from sqlalchemy.orm import with_loader_criteria
+from sqlalchemy.sql.dml import Delete
+from sqlalchemy.sql.dml import Update
+from sqlalchemy.sql.selectable import Select
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import eq_
@@ -87,7 +89,7 @@ class UpdateDeleteTest(fixtures.MappedTest):
         Address = cls.classes.Address
         addresses = cls.tables.addresses
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -95,7 +97,40 @@ class UpdateDeleteTest(fixtures.MappedTest):
                 "addresses": relationship(Address),
             },
         )
-        mapper(Address, addresses)
+        cls.mapper_registry.map_imperatively(Address, addresses)
+
+    @testing.combinations("table", "mapper", "both", argnames="bind_type")
+    @testing.combinations(
+        "update", "insert", "delete", argnames="statement_type"
+    )
+    def test_get_bind_scenarios(self, connection, bind_type, statement_type):
+        """test for #7936"""
+
+        User = self.classes.User
+
+        if statement_type == "insert":
+            stmt = insert(User).values(
+                {User.id: 5, User.age: 25, User.name: "spongebob"}
+            )
+        elif statement_type == "update":
+            stmt = (
+                update(User)
+                .where(User.id == 2)
+                .values({User.name: "spongebob"})
+            )
+        elif statement_type == "delete":
+            stmt = delete(User)
+
+        binds = {}
+        if bind_type == "both":
+            binds = {User: connection, User.__table__: connection}
+        elif bind_type == "mapper":
+            binds = {User: connection}
+        elif bind_type == "table":
+            binds = {User.__table__: connection}
+
+        with Session(binds=binds) as sess:
+            sess.execute(stmt)
 
     def test_illegal_eval(self):
         User = self.classes.User
@@ -201,7 +236,7 @@ class UpdateDeleteTest(fixtures.MappedTest):
                 return User.name.__clause_element__()
 
         s = fixture_session()
-        jill = s.query(User).get(3)
+        jill = s.get(User, 3)
         s.query(User).update(
             {Thing(): "moonbeam"}, synchronize_session="evaluate"
         )
@@ -228,7 +263,7 @@ class UpdateDeleteTest(fixtures.MappedTest):
         User = self.classes.User
 
         s = fixture_session()
-        jill = s.query(User).get(3)
+        jill = s.get(User, 3)
         s.query(User).update(
             {column("name"): "moonbeam"}, synchronize_session="evaluate"
         )
@@ -240,10 +275,12 @@ class UpdateDeleteTest(fixtures.MappedTest):
         class Foo(object):
             pass
 
-        mapper(Foo, self.tables.users, properties={"uname": synonym("name")})
+        self.mapper_registry.map_imperatively(
+            Foo, self.tables.users, properties={"uname": synonym("name")}
+        )
 
         s = fixture_session()
-        jill = s.query(Foo).get(3)
+        jill = s.get(Foo, 3)
         s.query(Foo).update(
             {"uname": "moonbeam"}, synchronize_session="evaluate"
         )
@@ -253,10 +290,12 @@ class UpdateDeleteTest(fixtures.MappedTest):
         class Foo(object):
             pass
 
-        mapper(Foo, self.tables.users, properties={"uname": synonym("name")})
+        self.mapper_registry.map_imperatively(
+            Foo, self.tables.users, properties={"uname": synonym("name")}
+        )
 
         s = fixture_session()
-        jill = s.query(Foo).get(3)
+        jill = s.get(Foo, 3)
         s.query(Foo).update(
             {Foo.uname: "moonbeam"}, synchronize_session="evaluate"
         )
@@ -266,14 +305,14 @@ class UpdateDeleteTest(fixtures.MappedTest):
         class Foo(object):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Foo,
             self.tables.users,
             properties={"uname": synonym("name"), "ufoo": synonym("uname")},
         )
 
         s = fixture_session()
-        jill = s.query(Foo).get(3)
+        jill = s.get(Foo, 3)
         s.query(Foo).update(
             {Foo.ufoo: "moonbeam"}, synchronize_session="evaluate"
         )
@@ -317,7 +356,7 @@ class UpdateDeleteTest(fixtures.MappedTest):
             if expire_jane_age:
                 asserter.assert_(
                     # it has to unexpire jane.name, because jane is not fully
-                    # expired and the critiera needs to look at this particular
+                    # expired and the criteria needs to look at this particular
                     # key
                     CompiledSQL(
                         "SELECT users.age_int AS users_age_int, "
@@ -335,7 +374,7 @@ class UpdateDeleteTest(fixtures.MappedTest):
             else:
                 asserter.assert_(
                     # it has to unexpire jane.name, because jane is not fully
-                    # expired and the critiera needs to look at this particular
+                    # expired and the criteria needs to look at this particular
                     # key
                     CompiledSQL(
                         "SELECT users.name AS users_name FROM users "
@@ -662,7 +701,8 @@ class UpdateDeleteTest(fixtures.MappedTest):
             list(zip([15, 27, 19, 27])),
         )
 
-    def test_update_future_lambda(self):
+    @testing.variation("values_first", [True, False])
+    def test_update_future_lambda(self, values_first):
         User, users = self.classes.User, self.tables.users
 
         sess = Session(testing.db, future=True)
@@ -671,14 +711,22 @@ class UpdateDeleteTest(fixtures.MappedTest):
             sess.execute(select(User).order_by(User.id)).scalars().all()
         )
 
-        sess.execute(
-            lambda_stmt(
+        new_value = 10
+
+        if values_first:
+            stmt = lambda_stmt(lambda: update(User))
+            stmt += lambda s: s.values({"age": User.age - new_value})
+            stmt += lambda s: s.where(User.age > 29).execution_options(
+                synchronize_session="evaluate"
+            )
+        else:
+            stmt = lambda_stmt(
                 lambda: update(User)
                 .where(User.age > 29)
-                .values({"age": User.age - 10})
+                .values({"age": User.age - new_value})
                 .execution_options(synchronize_session="evaluate")
-            ),
-        )
+            )
+        sess.execute(stmt)
 
         eq_([john.age, jack.age, jill.age, jane.age], [25, 37, 29, 27])
         eq_(
@@ -686,14 +734,21 @@ class UpdateDeleteTest(fixtures.MappedTest):
             list(zip([25, 37, 29, 27])),
         )
 
-        sess.execute(
-            lambda_stmt(
+        if values_first:
+            stmt = lambda_stmt(lambda: update(User))
+            stmt += lambda s: s.values({"age": User.age - new_value})
+            stmt += lambda s: s.where(User.age > 29).execution_options(
+                synchronize_session="evaluate"
+            )
+        else:
+            stmt = lambda_stmt(
                 lambda: update(User)
                 .where(User.age > 29)
                 .values({User.age: User.age - 10})
                 .execution_options(synchronize_session="evaluate")
             )
-        )
+
+        sess.execute(stmt)
         eq_([john.age, jack.age, jill.age, jane.age], [25, 27, 29, 27])
         eq_(
             sess.query(User.age).order_by(User.id).all(),
@@ -1424,6 +1479,42 @@ class UpdateDeleteTest(fixtures.MappedTest):
         ]
         eq_(["name", "age_int"], cols)
 
+    @testing.combinations(("update",), ("delete",), argnames="stmt_type")
+    @testing.combinations(
+        ("evaluate",), ("fetch",), (None,), argnames="sync_type"
+    )
+    def test_routing_session(self, stmt_type, sync_type, connection):
+        User = self.classes.User
+
+        if stmt_type == "update":
+            stmt = update(User).values(age=123)
+            expected = [Update]
+        elif stmt_type == "delete":
+            stmt = delete(User)
+            expected = [Delete]
+        else:
+            assert False
+
+        received = []
+
+        class RoutingSession(Session):
+            def get_bind(self, **kw):
+                received.append(type(kw["clause"]))
+                return super(RoutingSession, self).get_bind(**kw)
+
+        stmt = stmt.execution_options(synchronize_session=sync_type)
+
+        if sync_type == "fetch":
+            expected.insert(0, Select)
+
+            if not connection.dialect.full_returning:
+                expected.insert(0, Select)
+
+        with RoutingSession(bind=connection) as sess:
+            sess.execute(stmt)
+
+        eq_(received, expected)
+
 
 class UpdateDeleteIgnoresLoadersTest(fixtures.MappedTest):
     @classmethod
@@ -1490,8 +1581,8 @@ class UpdateDeleteIgnoresLoadersTest(fixtures.MappedTest):
             cls.tables.users,
         )
 
-        mapper(User, users)
-        mapper(
+        cls.mapper_registry.map_imperatively(User, users)
+        cls.mapper_registry.map_imperatively(
             Document,
             documents,
             properties={
@@ -1608,8 +1699,8 @@ class UpdateDeleteFromTest(fixtures.MappedTest):
             cls.tables.users,
         )
 
-        mapper(User, users)
-        mapper(
+        cls.mapper_registry.map_imperatively(User, users)
+        cls.mapper_registry.map_imperatively(
             Document,
             documents,
             properties={"user": relationship(User, backref="documents")},
@@ -1671,11 +1762,37 @@ class UpdateDeleteFromTest(fixtures.MappedTest):
         s = fixture_session()
 
         q = s.query(User).filter(User.id == Document.user_id)
+
         assert_raises_message(
             exc.InvalidRequestError,
             "Could not evaluate current criteria in Python.",
             q.update,
-            {"name": "ed"},
+            {"samename": "ed"},
+        )
+
+    @testing.requires.multi_table_update
+    def test_multi_table_criteria_ok_wo_eval(self):
+        User = self.classes.User
+        Document = self.classes.Document
+
+        s = fixture_session()
+
+        q = s.query(User).filter(User.id == Document.user_id)
+
+        q.update({Document.samename: "ed"}, synchronize_session="fetch")
+        eq_(
+            s.query(User.id, Document.samename, User.samename)
+            .filter(User.id == Document.user_id)
+            .order_by(User.id)
+            .all(),
+            [
+                (1, "ed", None),
+                (1, "ed", None),
+                (2, "ed", None),
+                (2, "ed", None),
+                (3, "ed", None),
+                (3, "ed", None),
+            ],
         )
 
     @testing.requires.update_where_target_in_subquery
@@ -1741,7 +1858,7 @@ class UpdateDeleteFromTest(fixtures.MappedTest):
             ),
         )
 
-    @testing.only_on("mysql", "Multi table update")
+    @testing.requires.multi_table_update
     def test_update_from_multitable_same_names(self):
         Document = self.classes.Document
         User = self.classes.User
@@ -1790,7 +1907,9 @@ class ExpressionUpdateTest(fixtures.MappedTest):
     @classmethod
     def setup_mappers(cls):
         data = cls.tables.data
-        mapper(cls.classes.Data, data, properties={"cnt": data.c.counter})
+        cls.mapper_registry.map_imperatively(
+            cls.classes.Data, data, properties={"cnt": data.c.counter}
+        )
 
     @testing.provide_metadata
     def test_update_attr_names(self):
@@ -2125,7 +2244,7 @@ class LoadFromReturningTest(fixtures.MappedTest):
         User = cls.classes.User
         users = cls.tables.users
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -2153,21 +2272,45 @@ class LoadFromReturningTest(fixtures.MappedTest):
                 [User(name="jack", age=52), User(name="jill", age=34)],
             )
 
-    def test_load_from_insert(self, connection):
+    @testing.combinations(
+        ("single",),
+        ("multiple", testing.requires.multivalues_inserts),
+        argnames="params",
+    )
+    def test_load_from_insert(self, connection, params):
         User = self.classes.User
 
-        stmt = (
-            insert(User)
-            .values({User.id: 5, User.age: 25, User.name: "spongebob"})
-            .returning(User)
-        )
+        if params == "multiple":
+            values = [
+                {User.id: 5, User.age: 25, User.name: "spongebob"},
+                {User.id: 6, User.age: 30, User.name: "patrick"},
+                {User.id: 7, User.age: 35, User.name: "squidward"},
+            ]
+        elif params == "single":
+            values = {User.id: 5, User.age: 25, User.name: "spongebob"}
+        else:
+            assert False
+
+        stmt = insert(User).values(values).returning(User)
 
         stmt = select(User).from_statement(stmt)
 
         with Session(connection) as sess:
             rows = sess.execute(stmt).scalars().all()
 
-            eq_(
-                rows,
-                [User(name="spongebob", age=25)],
-            )
+            if params == "multiple":
+                eq_(
+                    rows,
+                    [
+                        User(name="spongebob", age=25),
+                        User(name="patrick", age=30),
+                        User(name="squidward", age=35),
+                    ],
+                )
+            elif params == "single":
+                eq_(
+                    rows,
+                    [User(name="spongebob", age=25)],
+                )
+            else:
+                assert False

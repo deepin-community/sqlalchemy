@@ -69,10 +69,12 @@ be encouraged to move to :term:`2.0 style` execution which allows Core construct
 to be used freely against ORM entities::
 
     with Session(engine, future=True) as sess:
-
-        stmt = select(User).where(
-            User.name == 'sandy'
-        ).join(User.addresses).where(Address.email_address.like("%gmail%"))
+        stmt = (
+            select(User)
+            .where(User.name == "sandy")
+            .join(User.addresses)
+            .where(Address.email_address.like("%gmail%"))
+        )
 
         result = sess.execute(stmt)
 
@@ -102,7 +104,8 @@ Things to note about the above example:
 
 * Statements that work with ORM entities and are expected to return ORM
   results are invoked using :meth:`.orm.Session.execute`.  See
-  :ref:`session_querying_20` for a primer.
+  :ref:`session_querying_20` for a primer.  See also the following note
+  at :ref:`change_session_execute_result`.
 
 * a :class:`_engine.Result` object is returned, rather than a plain list, which
   itself is a much more sophisticated version of the previous ``ResultProxy``
@@ -121,16 +124,19 @@ Similar adjustments have been made to "bulk updates and deletes" such that
 Core :func:`_sql.update` and :func:`_sql.delete` can be used for bulk
 operations.   A bulk update like the following::
 
-    session.query(User).filter(User.name == 'sandy').update({"password": "foobar"}, synchronize_session="fetch")
+    session.query(User).filter(User.name == "sandy").update(
+        {"password": "foobar"}, synchronize_session="fetch"
+    )
 
 can now be achieved in :term:`2.0 style` (and indeed the above runs internally
 in this way) as follows::
 
     with Session(engine, future=True) as sess:
-        stmt = update(User).where(
-            User.name == 'sandy'
-        ).values(password="foobar").execution_options(
-            synchronize_session="fetch"
+        stmt = (
+            update(User)
+            .where(User.name == "sandy")
+            .values(password="foobar")
+            .execution_options(synchronize_session="fetch")
         )
 
         sess.execute(stmt)
@@ -146,6 +152,49 @@ for some examples).
     :ref:`migration_20_toplevel`
 
 :ticket:`5159`
+
+
+.. _change_session_execute_result:
+
+ORM ``Session.execute()`` uses "future" style ``Result`` sets in all cases
+--------------------------------------------------------------------------
+
+As noted in :ref:`change_4710_core`, the :class:`_engine.Result` and
+:class:`_engine.Row` objects now feature "named tuple" behavior, when used with
+an :class:`_engine.Engine` that includes the
+:paramref:`_sa.create_engine.future` parameter set to ``True``.  These
+"named tuple" rows in particular include a behavioral change which is that
+Python containment expressions using ``in``, such as::
+
+    >>> engine = create_engine("...", future=True)
+    >>> conn = engine.connect()
+    >>> row = conn.execute.first()
+    >>> "name" in row
+    True
+
+The above containment test will
+use **value containment**, not **key containment**; the ``row`` would need to
+have a **value** of "name" to return ``True``.
+
+Under SQLAlchemy 1.4, when :paramref:`_sa.create_engine.future` parameter set
+to ``False``, legacy-style ``LegacyRow`` objects are returned which feature the
+partial-named-tuple behavior of prior SQLAlchemy versions, where containment
+checks continue to use key containment; ``"name" in row`` would return
+True if the row had a **column** named "name", rather than a value.
+
+When using :meth:`_orm.Session.execute`, full named-tuple style is enabled
+**unconditionally**, meaning ``"name" in row`` will use **value containment**
+as the test, and **not** key containment. This is to accommodate that
+:meth:`_orm.Session.execute` now returns a :class:`_engine.Result` that also
+accommodates for ORM results, where even legacy ORM result rows such as those
+returned by :meth:`_orm.Query.all` use value containment.
+
+This is a behavioral change from SQLAlchemy 1.3 to 1.4.  To continue receiving
+key-containment collections, use the :meth:`_engine.Result.mappings` method to
+receive a :class:`_engine.MappingResult` that returns rows as dictionaries::
+
+    for dict_row in session.execute(text("select id from table")).mappings():
+        assert "id" in dict_row
 
 .. _change_4639:
 
@@ -288,7 +337,7 @@ the :class:`_orm.registry` object, and fall into these categories:
         * Declarative Table
         * Imperative Table (Hybrid)
             * :ref:`orm_declarative_dataclasses`
-* :ref:`Imperative (a.k.a. "classical" mapping) <classical_mapping>`
+* :ref:`Imperative (a.k.a. "classical" mapping) <orm_imperative_mapping>`
     * Using :meth:`_orm.registry.map_imperatively`
         * :ref:`orm_imperative_dataclasses`
 
@@ -676,7 +725,7 @@ that are in the columns clause of the SELECT statement.   A common beginner mist
 is code such as the following::
 
     stmt = select(users)
-    stmt = stmt.where(stmt.c.name == 'foo')
+    stmt = stmt.where(stmt.c.name == "foo")
 
 The above code appears intuitive and that it would generate
 "SELECT * FROM users WHERE name='foo'", however veteran SQLAlchemy users will
@@ -688,8 +737,7 @@ the use case above, as in a case like the above it links directly to the columns
 present in the ``users.c`` collection::
 
     stmt = select(users)
-    stmt = stmt.where(stmt.selected_columns.name == 'foo')
-
+    stmt = stmt.where(stmt.selected_columns.name == "foo")
 
 :ticket:`4617`
 
@@ -745,7 +793,9 @@ With the new implementation, :meth:`_sql.Select.join` and
 :meth:`_orm.Query.join`, adding JOIN criteria to the existing statement by
 matching to the left entity::
 
-    stmt = select(user_table).join(addresses_table, user_table.c.id == addresses_table.c.user_id)
+    stmt = select(user_table).join(
+        addresses_table, user_table.c.id == addresses_table.c.user_id
+    )
 
 producing::
 
@@ -839,7 +889,7 @@ returns a new :class:`_engine.URL` object with changes applied::
 To alter the contents of the :attr:`_engine.URL.query` dictionary, methods
 such as :meth:`_engine.URL.update_query_dict` may be used::
 
-    >>> url.update_query_dict({"sslcert": '/path/to/crt'})
+    >>> url.update_query_dict({"sslcert": "/path/to/crt"})
     postgresql://user:***@host/dbname?sslcert=%2Fpath%2Fto%2Fcrt
 
 To upgrade code that is mutating these fields directly, a **backwards and
@@ -855,6 +905,7 @@ style::
             some_url.drivername = some_drivername
             return some_url
 
+
     def set_ssl_cert(some_url, ssl_cert):
         # check for 1.4
         if hasattr(some_url, "update_query_dict"):
@@ -869,7 +920,9 @@ to strings, using sequences of strings to represent multiple parameters.
 For example::
 
     >>> from sqlalchemy.engine import make_url
-    >>> url = make_url("postgresql://user:pass@host/dbname?alt_host=host1&alt_host=host2&sslcert=%2Fpath%2Fto%2Fcrt")
+    >>> url = make_url(
+    ...     "postgresql://user:pass@host/dbname?alt_host=host1&alt_host=host2&sslcert=%2Fpath%2Fto%2Fcrt"
+    ... )
     >>> url.query
     immutabledict({'alt_host': ('host1', 'host2'), 'sslcert': '/path/to/crt'})
 
@@ -901,25 +954,24 @@ method.  A backwards compatible approach would look like::
 
     from sqlalchemy.engine import CreateEnginePlugin
 
+
     class MyPlugin(CreateEnginePlugin):
         def __init__(self, url, kwargs):
             # check for 1.4 style
             if hasattr(CreateEnginePlugin, "update_url"):
-                self.my_argument_one = url.query['my_argument_one']
-                self.my_argument_two = url.query['my_argument_two']
+                self.my_argument_one = url.query["my_argument_one"]
+                self.my_argument_two = url.query["my_argument_two"]
             else:
                 # legacy
-                self.my_argument_one = url.query.pop('my_argument_one')
-                self.my_argument_two = url.query.pop('my_argument_two')
+                self.my_argument_one = url.query.pop("my_argument_one")
+                self.my_argument_two = url.query.pop("my_argument_two")
 
-            self.my_argument_three = kwargs.pop('my_argument_three', None)
+            self.my_argument_three = kwargs.pop("my_argument_three", None)
 
         def update_url(self, url):
             # this method runs in 1.4 only and should be used to consume
             # plugin-specific arguments
-            return url.difference_update_query(
-                ["my_argument_one", "my_argument_two"]
-            )
+            return url.difference_update_query(["my_argument_one", "my_argument_two"])
 
 See the docstring at :class:`_engine.CreateEnginePlugin` for complete details
 on how this class is used.
@@ -974,9 +1026,9 @@ track for the old calling style::
 
     stmt = select(users_table).where(
         case(
-            (users_table.c.name == 'wendy', 'W'),
-            (users_table.c.name == 'jack', 'J'),
-            else_='E'
+            (users_table.c.name == "wendy", "W"),
+            (users_table.c.name == "jack", "J"),
+            else_="E",
         )
     )
 
@@ -1128,9 +1180,11 @@ not line up with these two tables will create an additional FROM entry::
 
     address_alias = aliased(Address)
 
-    q = session.query(User).\
-        join(address_alias, User.addresses).\
-        filter(Address.email_address == 'foo')
+    q = (
+        session.query(User)
+        .join(address_alias, User.addresses)
+        .filter(Address.email_address == "foo")
+    )
 
 The above query selects from a JOIN of ``User`` and ``address_alias``, the
 latter of which is an alias of the ``Address`` entity.  However, the
@@ -1189,11 +1243,13 @@ JOIN clauses but also through the WHERE clause  Above, we can add a WHERE
 clause to link the new ``Address`` entity with the previous ``address_alias``
 entity and that will remove the warning::
 
-    q = session.query(User).\
-        join(address_alias, User.addresses).\
-        filter(Address.email_address == 'foo').\
-        filter(Address.id == address_alias.id)  # resolve cartesian products,
-                                                # will no longer warn
+    q = (
+        session.query(User)
+        .join(address_alias, User.addresses)
+        .filter(Address.email_address == "foo")
+        .filter(Address.id == address_alias.id)
+    )  # resolve cartesian products,
+    # will no longer warn
 
 The cartesian product warning considers **any** kind of link between two
 FROM clauses to be a resolution, even if the end result set is still
@@ -1201,11 +1257,13 @@ wasteful, as the linter is intended only to detect the common case of a
 FROM clause that is completely unexpected.  If the FROM clause is referred
 to explicitly elsewhere and linked to the other FROMs, no warning is emitted::
 
-    q = session.query(User).\
-        join(address_alias, User.addresses).\
-        filter(Address.email_address == 'foo').\
-        filter(Address.id > address_alias.id)  # will generate a lot of rows,
-                                               # but no warning
+    q = (
+        session.query(User)
+        .join(address_alias, User.addresses)
+        .filter(Address.email_address == "foo")
+        .filter(Address.id > address_alias.id)
+    )  # will generate a lot of rows,
+    # but no warning
 
 Full cartesian products are also allowed if they are explicitly stated; if we
 wanted for example the cartesian product of ``User`` and ``Address``, we can
@@ -1256,7 +1314,6 @@ including methods such as:
     with engine.connect() as conn:
         row = conn.execute(table.select().where(table.c.id == 5)).one()
 
-
 :meth:`_engine.Result.one_or_none` - same, but also returns None for no rows
 
 :meth:`_engine.Result.all` - returns all rows
@@ -1278,12 +1335,12 @@ including methods such as:
 .. sourcecode::
 
      with engine.connect() as conn:
-        # requests x, y, z
-        result = conn.execute(select(table.c.x, table.c.y, table.c.z))
+         # requests x, y, z
+         result = conn.execute(select(table.c.x, table.c.y, table.c.z))
 
-        # iterate rows as y, x
-        for y, x in result.columns("y", "x"):
-            print("Y: %s  X: %s" % (y, x))
+         # iterate rows as y, x
+         for y, x in result.columns("y", "x"):
+             print("Y: %s  X: %s" % (y, x))
 
 :meth:`_engine.Result.scalars` - returns lists of scalar objects, from the
 first column by default but can also be selected:
@@ -1300,10 +1357,10 @@ dictionaries:
 .. sourcecode::
 
      with engine.connect() as conn:
-        result = conn.execute(select(table.c.x, table.c.y, table.c.z))
+         result = conn.execute(select(table.c.x, table.c.y, table.c.z))
 
-        for map_ in result.mappings():
-            print("Y: %(y)s  X: %(x)s" % map_)
+         for map_ in result.mappings():
+             print("Y: %(y)s  X: %(x)s" % map_)
 
 When using Core, the object returned by :meth:`_engine.Connection.execute` is
 an instance of :class:`.CursorResult`, which continues to feature the same API
@@ -1374,8 +1431,8 @@ can be summarized.   Given a "named tuple" in pseudo code as::
 
 The biggest cross-incompatible difference is the behavior of ``__contains__``::
 
-    "id" in row          # True for a mapping, False for a named tuple
-    "some name" in row   # False for a mapping, True for a named tuple
+    "id" in row  # True for a mapping, False for a named tuple
+    "some name" in row  # False for a mapping, True for a named tuple
 
 In 1.4, when a :class:`.LegacyRow` is returned by a Core result set, the above
 ``"id" in row`` comparison will continue to succeed, however a deprecation
@@ -1402,7 +1459,7 @@ when the row was first fetched.     This means for example when retrieving
 a datetime value from SQLite, the data for the row as present in the
 :class:`.RowProxy` object would previously have looked like::
 
-    row_proxy = (1, '2019-12-31 19:56:58.272106')
+    row_proxy = (1, "2019-12-31 19:56:58.272106")
 
 and then upon access via ``__getitem__``, the ``datetime.strptime()`` function
 would be used on the fly to convert the above string date into a ``datetime``
@@ -1463,6 +1520,8 @@ There are many reasons why the above assumptions do not hold:
 
     :ref:`change_4710_orm`
 
+    :ref:`change_session_execute_result`
+
 :ticket:`4710`
 
 .. _change_4753:
@@ -1478,8 +1537,8 @@ allows for greater cross-compatibility between the two, which is a key goal of
 the 2.0 transition::
 
     >>> from sqlalchemy import column, select
-    >>> c1, c2, c3, c4 = column('c1'), column('c2'), column('c3'), column('c4')
-    >>> stmt = select(c1, c2, c3.label('c2'), c2, c4)
+    >>> c1, c2, c3, c4 = column("c1"), column("c2"), column("c3"), column("c4")
+    >>> stmt = select(c1, c2, c3.label("c2"), c2, c4)
     >>> print(stmt)
     SELECT c1, c2, c3 AS c2, c2, c4
 
@@ -1522,7 +1581,7 @@ does not imply deduplication of column objects, although it does imply
 deduplication of implicitly generated labels::
 
     >>> from sqlalchemy import table
-    >>> user = table('user', column('id'), column('name'))
+    >>> user = table("user", column("id"), column("name"))
     >>> stmt = select(user.c.id, user.c.name, user.c.id).apply_labels()
     >>> print(stmt)
     SELECT "user".id AS user_id, "user".name AS user_name, "user".id AS id_1
@@ -1606,7 +1665,7 @@ prominently with CAST::
 For CAST against expressions that don't have a name, the previous logic is used
 to generate the usual "anonymous" labels::
 
-    >>> print(select(cast('hi there,' + foo.c.data, String)))
+    >>> print(select(cast("hi there," + foo.c.data, String)))
     SELECT CAST(:data_1 + foo.data AS VARCHAR) AS anon_1
     FROM foo
 
@@ -1614,14 +1673,14 @@ A :func:`.cast` against a :class:`.Label`, despite having to omit the label
 expression as these don't render inside of a CAST, will nonetheless make use of
 the given name::
 
-    >>> print(select(cast(('hi there,' + foo.c.data).label('hello_data'), String)))
+    >>> print(select(cast(("hi there," + foo.c.data).label("hello_data"), String)))
     SELECT CAST(:data_1 + foo.data AS VARCHAR) AS hello_data
     FROM foo
 
 And of course as was always the case, :class:`.Label` can be applied to the
 expression on the outside to apply an "AS <name>" label directly::
 
-    >>> print(select(cast(('hi there,' + foo.c.data), String).label('hello_data')))
+    >>> print(select(cast(("hi there," + foo.c.data), String).label("hello_data")))
     SELECT CAST(:data_1 + foo.data AS VARCHAR) AS hello_data
     FROM foo
 
@@ -1768,7 +1827,6 @@ flags to ``True``::
       boolean = Column(Boolean(create_constraint=True))
       enum = Column(Enum("a", "b", "c", create_constraint=True))
 
-
 :ticket:`5367`
 
 New Features - ORM
@@ -1796,12 +1854,13 @@ To configure column-level raiseload on a mapping, the
 the attribute::
 
     class Book(Base):
-        __tablename__ = 'book'
+        __tablename__ = "book"
 
         book_id = Column(Integer, primary_key=True)
         title = Column(String(200), nullable=False)
         summary = deferred(Column(String(2000)), raiseload=True)
         excerpt = deferred(Column(Text), raiseload=True)
+
 
     book_w_excerpt = session.query(Book).options(undefer(Book.excerpt)).first()
 
@@ -1810,8 +1869,7 @@ works for :func:`_orm.relationship` attributes be expanded to also support colum
 attributes.    However, this would break the "wildcard" behavior of :func:`.raiseload`,
 which is documented as allowing one to prevent all relationships from loading::
 
-    session.query(Order).options(
-        joinedload(Order.items), raiseload('*'))
+    session.query(Order).options(joinedload(Order.items), raiseload("*"))
 
 Above, if we had expanded :func:`.raiseload` to accommodate for columns  as
 well, the wildcard would also prevent columns from loading and thus be  a
@@ -2003,11 +2061,7 @@ as entity / column should work::
     row._mapping[u1]  # same as row[0]
 
 
-    row = (
-        s.query(User.id, Address.email_address)
-        .join(User.addresses)
-        .first()
-    )
+    row = s.query(User.id, Address.email_address).join(User.addresses).first()
 
     row._mapping[User.id]  # same as row[0]
     row._mapping["id"]  # same as row[0]
@@ -2202,13 +2256,11 @@ use of the :paramref:`_orm.Session.future` flag to :term:`2.0-style` mode::
     Session = sessionmaker(engine, future=True)
 
     with Session() as session:
-      u1 = User()
-      session.add(u1)
+        u1 = User()
+        session.add(u1)
 
-      a1 = Address()
-      a1.user = u1  # <--- will not add "a1" to the Session
-
-
+        a1 = Address()
+        a1.user = u1  # <--- will not add "a1" to the Session
 
 :ticket:`5150`
 
@@ -2225,7 +2277,7 @@ selectin/subquery loaders will run an "immediateload" operation for a given
 relationship, when an expired object is unexpired or an object is refreshed::
 
     >>> a1 = session.query(A).options(joinedload(A.bs)).first()
-    >>> a1.data = 'new data'
+    >>> a1.data = "new data"
     >>> session.commit()
 
 Above, the ``A`` object was loaded with a ``joinedload()`` option associated
@@ -2251,7 +2303,7 @@ a refresh scenario, which resembles the query emitted by "lazyload", emitted as
 an additional query::
 
     >>> a1 = session.query(A).options(selectinload(A.bs)).first()
-    >>> a1.data = 'new data'
+    >>> a1.data = "new data"
     >>> session.commit()
     >>> a1.data
     SELECT a.id AS a_id, a.data AS a_data
@@ -2272,6 +2324,175 @@ users who are looking for the eagerload on refresh behavior may find this
 to be more noticeable.
 
 :ticket:`1763`
+
+.. _change_8879:
+
+Column loaders such as ``deferred()``, ``with_expression()`` only take effect when indicated on the outermost, full entity query
+--------------------------------------------------------------------------------------------------------------------------------
+
+.. note:: This change note was not present in earlier versions of this document,
+   however is relevant for all SQLAlchemy 1.4 versions.
+
+A behavior that was never supported in 1.3 and previous versions
+yet nonetheless would have a particular effect
+was to repurpose column loader options such as :func:`_orm.defer` and
+:func:`_orm.with_expression` in subqueries in order to control which
+SQL expressions would be in the columns clause of each subquery.  A typical
+example would be to
+construct UNION queries, such as::
+
+    q1 = session.query(User).options(with_expression(User.expr, literal("u1")))
+    q2 = session.query(User).options(with_expression(User.expr, literal("u2")))
+
+    q1.union_all(q2).all()
+
+In version 1.3, the :func:`_orm.with_expression` option would take effect
+for each element of the UNION, such as:
+
+.. sourcecode:: sql
+
+    SELECT anon_1.anon_2 AS anon_1_anon_2, anon_1.user_account_id AS anon_1_user_account_id,
+    anon_1.user_account_name AS anon_1_user_account_name
+    FROM (
+        SELECT ? AS anon_2, user_account.id AS user_account_id, user_account.name AS user_account_name
+        FROM user_account
+        UNION ALL
+        SELECT ? AS anon_3, user_account.id AS user_account_id, user_account.name AS user_account_name
+        FROM user_account
+    ) AS anon_1
+    ('u1', 'u2')
+
+SQLAlchemy 1.4's notion of loader options has been made more strict, and as such
+are applied to the **outermost part of the query only**, which is the
+SELECT that is intended to populate the actual ORM entities to be returned; the
+query above in 1.4 will produce:
+
+.. sourcecode:: sql
+
+    SELECT ? AS anon_1, anon_2.user_account_id AS anon_2_user_account_id,
+    anon_2.user_account_name AS anon_2_user_account_name
+    FROM (
+        SELECT user_account.id AS user_account_id, user_account.name AS user_account_name
+        FROM user_account
+        UNION ALL
+        SELECT user_account.id AS user_account_id, user_account.name AS user_account_name
+        FROM user_account
+    ) AS anon_2
+    ('u1',)
+
+that is, the options for the :class:`_orm.Query` were taken from the first
+element of the UNION, since all loader options are only to be at the topmost
+level.  The option from the second query was ignored.
+
+Rationale
+^^^^^^^^^
+
+This behavior now more closely matches that of other kinds of loader options
+such as relationship loader options like :func:`_orm.joinedload` in all
+SQLAlchemy versions, 1.3 and earlier included, which in a UNION situation were
+already copied out to the top most level of the query, and only taken from the
+first element of the UNION, discarding any options on other parts of the query.
+
+This implicit copying and selective ignoring of options, demonstrated above as
+being fairly arbitrary, is a legacy behavior that's only part of
+:class:`_orm.Query`, and is a particular example of where :class:`_orm.Query`
+and its means of applying :meth:`_orm.Query.union_all` falls short, as it's
+ambiguous how to turn a single SELECT into a UNION of itself and another query
+and how loader options should be applied to that new statement.
+
+SQLAlchemy 1.4's behavior can be demonstrated as generally superior to that
+of 1.3 for a more common case of using :func:`_orm.defer`.  The following
+query::
+
+    q1 = session.query(User).options(defer(User.name))
+    q2 = session.query(User).options(defer(User.name))
+
+    q1.union_all(q2).all()
+
+In 1.3 would awkwardly add NULL to the inner queries and then SELECT it:
+
+.. sourcecode:: sql
+
+    SELECT anon_1.anon_2 AS anon_1_anon_2, anon_1.user_account_id AS anon_1_user_account_id
+    FROM (
+        SELECT NULL AS anon_2, user_account.id AS user_account_id
+        FROM user_account
+        UNION ALL
+        SELECT NULL AS anon_2, user_account.id AS user_account_id
+        FROM user_account
+    ) AS anon_1
+
+If all queries didn't have the identical options set up, the above scenario
+would raise an error due to not being able to form a proper UNION.
+
+Whereas in 1.4, the option is applied only at the top layer, omitting
+the fetch for ``User.name``, and this complexity is avoided:
+
+.. sourcecode:: sql
+
+    SELECT anon_1.user_account_id AS anon_1_user_account_id
+    FROM (
+        SELECT user_account.id AS user_account_id, user_account.name AS user_account_name
+        FROM user_account
+        UNION ALL
+        SELECT user_account.id AS user_account_id, user_account.name AS user_account_name
+        FROM user_account
+    ) AS anon_1
+
+Correct Approach
+^^^^^^^^^^^^^^^^
+
+Using :term:`2.0-style` querying, no warning is emitted at the moment, however
+the nested :func:`_orm.with_expression` options are consistently ignored as
+they don't apply to an entity being loaded, and are not implicitly copied
+anywhere. The query below produces no output for the
+:func:`_orm.with_expression` calls::
+
+    s1 = select(User).options(with_expression(User.expr, literal("u1")))
+    s2 = select(User).options(with_expression(User.expr, literal("u2")))
+
+    stmt = union_all(s1, s2)
+
+    session.scalars(select(User).from_statement(stmt)).all()
+
+producing the SQL:
+
+.. sourcecode:: sql
+
+    SELECT user_account.id, user_account.name
+    FROM user_account
+    UNION ALL
+    SELECT user_account.id, user_account.name
+    FROM user_account
+
+To correctly apply :func:`_orm.with_expression` to the ``User`` entity,
+it should be applied to the outermost level of the query, using an
+ordinary SQL expression inside the columns clause of each SELECT::
+
+    s1 = select(User, literal("u1").label("some_literal"))
+    s2 = select(User, literal("u2").label("some_literal"))
+
+    stmt = union_all(s1, s2)
+
+    session.scalars(
+        select(User)
+        .from_statement(stmt)
+        .options(with_expression(User.expr, stmt.selected_columns.some_literal))
+    ).all()
+
+Which will produce the expected SQL:
+
+.. sourcecode:: sql
+
+    SELECT user_account.id, user_account.name, ? AS some_literal
+    FROM user_account
+    UNION ALL
+    SELECT user_account.id, user_account.name, ? AS some_literal
+    FROM user_account
+
+The ``User`` objects themselves will include this expression in their
+contents underneath ``User.expr``.
+
 
 .. _change_4519:
 
@@ -2333,9 +2554,11 @@ eventually identified in :ticket:`4519` where this empty collection could be
 harmful, which is when the object is merged into a session::
 
     >>> u1 = User(id=1)  # create an empty User to merge with id=1 in the database
-    >>> merged1 = session.merge(u1)  # value of merged1.addresses is unchanged from that of the DB
+    >>> merged1 = session.merge(
+    ...     u1
+    ... )  # value of merged1.addresses is unchanged from that of the DB
 
-    >>> u2 = User(id=2) # create an empty User to merge with id=2 in the database
+    >>> u2 = User(id=2)  # create an empty User to merge with id=2 in the database
     >>> u2.addresses
     []
     >>> merged2 = session.merge(u2)  # value of merged2.addresses has been emptied in the DB
@@ -2364,7 +2587,9 @@ however is not added to ``__dict__`` until it is actually mutated::
     >>> u1 = User()
     >>> l1 = u1.addresses  # new list is created, associated with the state
     >>> assert u1.addresses is l1  # you get the same list each time you access it
-    >>> assert "addresses" not in u1.__dict__  # but it won't go into __dict__ until it's mutated
+    >>> assert (
+    ...     "addresses" not in u1.__dict__
+    ... )  # but it won't go into __dict__ until it's mutated
     >>> from sqlalchemy import inspect
     >>> inspect(u1).attrs.addresses.history
     History(added=None, unchanged=None, deleted=None)
@@ -2386,7 +2611,9 @@ the object contains certain values based on its ``__dict__``::
     >>> u1.addresses
     []
     # this will now fail, would pass before
-    >>> assert {k: v for k, v in u1.__dict__.items() if not k.startswith("_")} == {"addresses": []}
+    >>> assert {k: v for k, v in u1.__dict__.items() if not k.startswith("_")} == {
+    ...     "addresses": []
+    ... }
 
 or to ensure that the collection won't require a lazy load to proceed, the
 (admittedly awkward) code below will now also fail::
@@ -2415,9 +2642,10 @@ SQLAlchemy has always had logic to detect when an object in the :class:`.Session
 to be inserted has the same primary key as an object that is already present::
 
     class Product(Base):
-        __tablename__ = 'product'
+        __tablename__ = "product"
 
         id = Column(Integer, primary_key=True)
+
 
     session = Session(engine)
 
@@ -2500,8 +2728,7 @@ disallowed::
         # ...
 
         # this is now an error
-        addresses = relationship(
-            "Address", viewonly=True, cascade="all, delete-orphan")
+        addresses = relationship("Address", viewonly=True, cascade="all, delete-orphan")
 
 The above will raise::
 
@@ -2542,10 +2769,7 @@ inheritance mapping::
 
     s.commit()
 
-    print(
-        s.query(Manager).select_entity_from(s.query(Employee).subquery()).all()
-    )
-
+    print(s.query(Manager).select_entity_from(s.query(Employee).subquery()).all())
 
 The subquery selects both the ``Engineer`` and the ``Manager`` rows, and
 even though the outer query is against ``Manager``, we get a non ``Manager``
@@ -2626,6 +2850,19 @@ discriminator column::
 
 Dialect Changes
 ===============
+
+pg8000 minimum version is 1.16.6, supports Python 3 only
+--------------------------------------------------------
+
+Support for the pg8000 dialect has been dramatically improved, with help from
+the project's maintainer.
+
+Due to API changes, the pg8000 dialect now requires
+version 1.16.6 or greater. The pg8000 series has dropped Python 2 support as of
+the 1.13 series.  Python 2 users who require pg8000 should ensure their
+requirements are pinned at ``SQLAlchemy<1.4``.
+
+:ticket:`5451`
 
 psycopg2 version 2.7 or higher is required for the PostgreSQL psycopg2 dialect
 ------------------------------------------------------------------------------
@@ -2805,8 +3042,9 @@ effect. When "optional" is used on a :class:`.Sequence` that is present in the
 integer primary key column of a table::
 
     Table(
-        "some_table", metadata,
-        Column("id", Integer, Sequence("some_seq", optional=True), primary_key=True)
+        "some_table",
+        metadata,
+        Column("id", Integer, Sequence("some_seq", optional=True), primary_key=True),
     )
 
 The above :class:`.Sequence` is only used for DDL and INSERT statements if the
