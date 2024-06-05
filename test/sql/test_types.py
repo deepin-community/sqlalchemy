@@ -75,12 +75,14 @@ from sqlalchemy.sql import visitors
 from sqlalchemy.sql.sqltypes import TypeEngine
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
+from sqlalchemy.testing import assert_warns
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import AssertsExecutionResults
 from sqlalchemy.testing import engines
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import expect_deprecated_20
 from sqlalchemy.testing import expect_raises
+from sqlalchemy.testing import expect_raises_message
 from sqlalchemy.testing import expect_warnings
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
@@ -782,6 +784,136 @@ class UserDefinedRoundTripTest(_UserDefinedTypeFixture, fixtures.TablesTest):
         eq_(result.fetchall(), [(3, 1500), (4, 900)])
 
 
+class TypeDecoratorSpecialCasesTest(AssertsCompiledSQL, fixtures.TestBase):
+    __backend__ = True
+
+    @testing.requires.array_type
+    def test_typedec_of_array_modified(self, metadata, connection):
+        """test #7249"""
+
+        class SkipsFirst(TypeDecorator):  # , Indexable):
+            impl = ARRAY(Integer, zero_indexes=True)
+
+            cache_ok = True
+
+            def process_bind_param(self, value, dialect):
+                return value[1:]
+
+            def copy(self, **kw):
+                return SkipsFirst(**kw)
+
+            def coerce_compared_value(self, op, value):
+                return self.impl.coerce_compared_value(op, value)
+
+        t = Table(
+            "t",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("data", SkipsFirst),
+        )
+        t.create(connection)
+
+        connection.execute(t.insert(), {"data": [1, 2, 3]})
+        val = connection.scalar(select(t.c.data))
+        eq_(val, [2, 3])
+
+        val = connection.scalar(select(t.c.data[0]))
+        eq_(val, 2)
+
+    def test_typedec_of_array_ops(self):
+        class ArrayDec(TypeDecorator):
+            impl = ARRAY(Integer, zero_indexes=True)
+
+            cache_ok = True
+
+            def coerce_compared_value(self, op, value):
+                return self.impl.coerce_compared_value(op, value)
+
+        expr1 = column("q", ArrayDec)[0]
+        expr2 = column("q", ARRAY(Integer, zero_indexes=True))[0]
+
+        eq_(expr1.right.type._type_affinity, Integer)
+        eq_(expr2.right.type._type_affinity, Integer)
+
+        self.assert_compile(
+            column("q", ArrayDec).any(7, operator=operators.lt),
+            "%(q_1)s < ANY (q)",
+            dialect="postgresql",
+        )
+
+        self.assert_compile(
+            column("q", ArrayDec)[5], "q[%(q_1)s]", dialect="postgresql"
+        )
+
+    def test_typedec_of_json_ops(self):
+        class JsonDec(TypeDecorator):
+            impl = JSON()
+
+            cache_ok = True
+
+        self.assert_compile(
+            column("q", JsonDec)["q"], "q -> %(q_1)s", dialect="postgresql"
+        )
+
+        self.assert_compile(
+            column("q", JsonDec)["q"].as_integer(),
+            "CAST(q ->> %(q_1)s AS INTEGER)",
+            dialect="postgresql",
+        )
+
+    @testing.requires.array_type
+    def test_typedec_of_array(self, metadata, connection):
+        """test #7249"""
+
+        class ArrayDec(TypeDecorator):
+            impl = ARRAY(Integer, zero_indexes=True)
+
+            cache_ok = True
+
+            def coerce_compared_value(self, op, value):
+                return self.impl.coerce_compared_value(op, value)
+
+        t = Table(
+            "t",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("data", ArrayDec),
+        )
+
+        t.create(connection)
+
+        connection.execute(t.insert(), {"data": [1, 2, 3]})
+        val = connection.scalar(select(t.c.data))
+        eq_(val, [1, 2, 3])
+
+        val = connection.scalar(select(t.c.data[0]))
+        eq_(val, 1)
+
+    @testing.requires.json_type
+    def test_typedec_of_json(self, metadata, connection):
+        """test #7249"""
+
+        class JsonDec(TypeDecorator):
+            impl = JSON()
+
+            cache_ok = True
+
+        t = Table(
+            "t",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("data", JsonDec),
+        )
+        t.create(connection)
+
+        connection.execute(t.insert(), {"data": {"key": "value"}})
+        val = connection.scalar(select(t.c.data))
+        eq_(val, {"key": "value"})
+
+        val = connection.scalar(select(t.c.data["key"].as_string()))
+        eq_(val, "value")
+
+
 class BindProcessorInsertValuesTest(UserDefinedRoundTripTest):
     """related to #6770, test that insert().values() applies to
     bound parameter handlers including the None value."""
@@ -1116,7 +1248,7 @@ class TypeCoerceCastTest(fixtures.TablesTest):
         MyType = self.MyType
 
         # test coerce from nulltype - e.g. use an object that
-        # does't match to a known type
+        # doesn't match to a known type
         class MyObj(object):
             def __str__(self):
                 return "THISISMYOBJ"
@@ -1464,6 +1596,8 @@ class VariantBackendTest(fixtures.TestBase, AssertsCompiledSQL):
 
     def test_type_decorator_compile_variant_two(self):
         class UTypeOne(types.UserDefinedType):
+            cache_ok = True
+
             def get_col_spec(self):
                 return "UTYPEONE"
 
@@ -1474,6 +1608,8 @@ class VariantBackendTest(fixtures.TestBase, AssertsCompiledSQL):
                 return process
 
         class UTypeTwo(types.UserDefinedType):
+            cache_ok = True
+
             def get_col_spec(self):
                 return "UTYPETWO"
 
@@ -1522,6 +1658,8 @@ class VariantBackendTest(fixtures.TestBase, AssertsCompiledSQL):
 class VariantTest(fixtures.TestBase, AssertsCompiledSQL):
     def setup_test(self):
         class UTypeOne(types.UserDefinedType):
+            cache_ok = True
+
             def get_col_spec(self):
                 return "UTYPEONE"
 
@@ -1532,6 +1670,8 @@ class VariantTest(fixtures.TestBase, AssertsCompiledSQL):
                 return process
 
         class UTypeTwo(types.UserDefinedType):
+            cache_ok = True
+
             def get_col_spec(self):
                 return "UTYPETWO"
 
@@ -1542,6 +1682,8 @@ class VariantTest(fixtures.TestBase, AssertsCompiledSQL):
                 return process
 
         class UTypeThree(types.UserDefinedType):
+            cache_ok = True
+
             def get_col_spec(self):
                 return "UTYPETHREE"
 
@@ -1693,10 +1835,10 @@ class UnicodeTest(fixtures.TestBase):
         dialect.supports_unicode_binds = True
         uni = u.dialect_impl(dialect).bind_processor(dialect)
         if util.py3k:
-            assert_raises(exc.SAWarning, uni, b"x")
+            assert_warns(exc.SAWarning, uni, b"x")
             assert isinstance(uni(unicodedata), str)
         else:
-            assert_raises(exc.SAWarning, uni, "x")
+            assert_warns(exc.SAWarning, uni, "x")
             assert isinstance(uni(unicodedata), unicode)  # noqa
 
     def test_unicode_warnings_typelevel_sqla_unicode(self):
@@ -1705,7 +1847,7 @@ class UnicodeTest(fixtures.TestBase):
         dialect = default.DefaultDialect()
         dialect.supports_unicode_binds = False
         uni = u.dialect_impl(dialect).bind_processor(dialect)
-        assert_raises(exc.SAWarning, uni, util.b("x"))
+        assert_warns(exc.SAWarning, uni, util.b("x"))
         assert isinstance(uni(unicodedata), util.binary_type)
 
         eq_(uni(unicodedata), unicodedata.encode("utf-8"))
@@ -2496,13 +2638,44 @@ class EnumTest(AssertsCompiledSQL, fixtures.TablesTest):
             "inherit_schema=True, native_enum=False)",
         )
 
+    def test_repr_two(self):
+        e = Enum("x", "y", name="somename", create_constraint=True)
+        eq_(
+            repr(e),
+            "Enum('x', 'y', name='somename', create_constraint=True)",
+        )
+
+    def test_repr_three(self):
+        e = Enum("x", "y", native_enum=False, length=255)
+        eq_(
+            repr(e),
+            "Enum('x', 'y', native_enum=False, length=255)",
+        )
+
+    def test_repr_four(self):
+        with expect_warnings(
+            "Enum 'length' argument is currently ignored unless native_enum"
+        ):
+            e = Enum("x", "y", length=255)
+        # length is currently ignored if native_enum is not False
+        eq_(
+            repr(e),
+            "Enum('x', 'y')",
+        )
+
     def test_length_native(self):
-        e = Enum("x", "y", "long", length=42)
+        with expect_warnings(
+            "Enum 'length' argument is currently ignored unless native_enum"
+        ):
+            e = Enum("x", "y", "long", length=42)
 
         eq_(e.length, len("long"))
 
         # no error is raised
-        e = Enum("x", "y", "long", length=1)
+        with expect_warnings(
+            "Enum 'length' argument is currently ignored unless native_enum"
+        ):
+            e = Enum("x", "y", "long", length=1)
         eq_(e.length, len("long"))
 
     def test_length_raises(self):
@@ -2961,6 +3134,8 @@ class ExpressionTest(
         global MyCustomType, MyTypeDec
 
         class MyCustomType(types.UserDefinedType):
+            cache_ok = True
+
             def get_col_spec(self):
                 return "INT"
 
@@ -3436,6 +3611,24 @@ class ExpressionTest(
 
 class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
     __dialect__ = "default"
+
+    def test_compile_err_formatting(self):
+        with expect_raises_message(
+            exc.CompileError,
+            r"No literal value renderer is available for literal "
+            r"value \"\(1, 2, 3\)\" with datatype NULL",
+        ):
+            func.foo((1, 2, 3)).compile(compile_kwargs={"literal_binds": True})
+
+    def test_strict_bool_err_formatting(self):
+        typ = Boolean()
+
+        dialect = default.DefaultDialect()
+        with expect_raises_message(
+            TypeError,
+            r"Not a boolean value: \(5,\)",
+        ):
+            typ.bind_processor(dialect)((5,))
 
     @testing.requires.unbounded_varchar
     def test_string_plain(self):
@@ -4038,8 +4231,8 @@ class LiteralTest(fixtures.TestBase):
         lit = literal(value)
 
         assert_raises_message(
-            NotImplementedError,
-            "Don't know how to literal-quote value.*",
+            exc.CompileError,
+            r"No literal value renderer is available for literal value.*",
             lit.compile,
             dialect=testing.db.dialect,
             compile_kwargs={"literal_binds": True},

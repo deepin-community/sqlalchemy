@@ -10,8 +10,8 @@ from sqlalchemy import testing
 from sqlalchemy import text
 from sqlalchemy import util
 from sqlalchemy.orm import attributes
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import instrumentation
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 import sqlalchemy.orm.collections as collections
 from sqlalchemy.orm.collections import collection
@@ -1852,8 +1852,8 @@ class DictHelpersTest(OrderedDictFixture, fixtures.MappedTest):
             self.classes.Child,
         )
 
-        mapper(Child, children)
-        mapper(
+        self.mapper_registry.map_imperatively(Child, children)
+        self.mapper_registry.map_imperatively(
             Parent,
             parents,
             properties={
@@ -1874,7 +1874,7 @@ class DictHelpersTest(OrderedDictFixture, fixtures.MappedTest):
         pid = p.id
         session.expunge_all()
 
-        p = session.query(Parent).get(pid)
+        p = session.get(Parent, pid)
 
         eq_(set(p.children.keys()), set(["foo", "bar"]))
         cid = p.children["foo"].id
@@ -1886,7 +1886,7 @@ class DictHelpersTest(OrderedDictFixture, fixtures.MappedTest):
         session.flush()
         session.expunge_all()
 
-        p = session.query(Parent).get(pid)
+        p = session.get(Parent, pid)
 
         self.assert_(set(p.children.keys()) == set(["foo", "bar"]))
         self.assert_(p.children["foo"].id != cid)
@@ -1897,7 +1897,7 @@ class DictHelpersTest(OrderedDictFixture, fixtures.MappedTest):
         session.flush()
         session.expunge_all()
 
-        p = session.query(Parent).get(pid)
+        p = session.get(Parent, pid)
         self.assert_(
             len(list(collections.collection_adapter(p.children))) == 2
         )
@@ -1912,7 +1912,7 @@ class DictHelpersTest(OrderedDictFixture, fixtures.MappedTest):
         session.flush()
         session.expunge_all()
 
-        p = session.query(Parent).get(pid)
+        p = session.get(Parent, pid)
         self.assert_(
             len(list(collections.collection_adapter(p.children))) == 1
         )
@@ -1924,7 +1924,7 @@ class DictHelpersTest(OrderedDictFixture, fixtures.MappedTest):
         session.flush()
         session.expunge_all()
 
-        p = session.query(Parent).get(pid)
+        p = session.get(Parent, pid)
         self.assert_(
             len(list(collections.collection_adapter(p.children))) == 0
         )
@@ -1937,8 +1937,8 @@ class DictHelpersTest(OrderedDictFixture, fixtures.MappedTest):
             self.classes.Child,
         )
 
-        mapper(Child, children)
-        mapper(
+        self.mapper_registry.map_imperatively(Child, children)
+        self.mapper_registry.map_imperatively(
             Parent,
             parents,
             properties={
@@ -1960,7 +1960,7 @@ class DictHelpersTest(OrderedDictFixture, fixtures.MappedTest):
         pid = p.id
         session.expunge_all()
 
-        p = session.query(Parent).get(pid)
+        p = session.get(Parent, pid)
 
         self.assert_(
             set(p.children.keys()) == set([("foo", "1"), ("foo", "2")])
@@ -1974,7 +1974,7 @@ class DictHelpersTest(OrderedDictFixture, fixtures.MappedTest):
         session.flush()
         session.expunge_all()
 
-        p = session.query(Parent).get(pid)
+        p = session.get(Parent, pid)
 
         self.assert_(
             set(p.children.keys()) == set([("foo", "1"), ("foo", "2")])
@@ -2000,8 +2000,6 @@ class DictHelpersTest(OrderedDictFixture, fixtures.MappedTest):
     def test_declarative_column_mapped(self):
         """test that uncompiled attribute usage works with
         column_mapped_collection"""
-
-        from sqlalchemy.ext.declarative import declarative_base
 
         BaseObject = declarative_base()
 
@@ -2106,10 +2104,12 @@ class ColumnMappedWSerialize(fixtures.MappedTest):
         Foo = self.classes.Foo
         Bar = self.classes.Bar
         bar = self.tables["x.bar"]
-        mapper(
+        self.mapper_registry.map_imperatively(
             Foo, self.tables.foo, properties={"foo_id": self.tables.foo.c.id}
         )
-        mapper(Bar, bar, inherits=Foo, properties={"bar_id": bar.c.id})
+        self.mapper_registry.map_imperatively(
+            Bar, bar, inherits=Foo, properties={"bar_id": bar.c.id}
+        )
 
         bar_spec = Bar(foo_id=1, bar_id=2, bat_id=3)
         self._run_test(
@@ -2126,7 +2126,7 @@ class ColumnMappedWSerialize(fixtures.MappedTest):
 
         s = select(self.tables.foo).alias()
         Foo = self.classes.Foo
-        mapper(Foo, s)
+        self.mapper_registry.map_imperatively(Foo, s)
         self._run_test([(Foo.b, Foo(b=5), 5), (s.c.b, Foo(b=5), 5)])
 
     def _run_test(self, specs):
@@ -2187,12 +2187,12 @@ class CustomCollectionsTest(fixtures.MappedTest):
         class Bar(object):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Foo,
             sometable,
             properties={"bars": relationship(Bar, collection_class=MyList)},
         )
-        mapper(Bar, someothertable)
+        self.mapper_registry.map_imperatively(Bar, someothertable)
         f = Foo()
         assert isinstance(f.bars, MyList)
 
@@ -2210,12 +2210,12 @@ class CustomCollectionsTest(fixtures.MappedTest):
         class Bar(object):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Foo,
             sometable,
             properties={"bars": relationship(Bar, collection_class=set)},
         )
-        mapper(Bar, someothertable)
+        self.mapper_registry.map_imperatively(Bar, someothertable)
         f = Foo()
         f.bars.add(Bar())
         f.bars.add(Bar())
@@ -2223,7 +2223,7 @@ class CustomCollectionsTest(fixtures.MappedTest):
         sess.add(f)
         sess.flush()
         sess.expunge_all()
-        f = sess.query(Foo).get(f.col1)
+        f = sess.get(Foo, f.col1)
         assert len(list(f.bars)) == 2
         f.bars.clear()
 
@@ -2251,14 +2251,14 @@ class CustomCollectionsTest(fixtures.MappedTest):
                 if id(item) in self:
                     del self[id(item)]
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Foo,
             sometable,
             properties={
                 "bars": relationship(Bar, collection_class=AppenderDict)
             },
         )
-        mapper(Bar, someothertable)
+        self.mapper_registry.map_imperatively(Bar, someothertable)
         f = Foo()
         f.bars.set(Bar())
         f.bars.set(Bar())
@@ -2266,7 +2266,7 @@ class CustomCollectionsTest(fixtures.MappedTest):
         sess.add(f)
         sess.flush()
         sess.expunge_all()
-        f = sess.query(Foo).get(f.col1)
+        f = sess.get(Foo, f.col1)
         assert len(list(f.bars)) == 2
         f.bars.clear()
 
@@ -2286,7 +2286,7 @@ class CustomCollectionsTest(fixtures.MappedTest):
             def __init__(self, data):
                 self.data = data
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Foo,
             sometable,
             properties={
@@ -2298,7 +2298,7 @@ class CustomCollectionsTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Bar, someothertable)
+        self.mapper_registry.map_imperatively(Bar, someothertable)
 
         f = Foo()
         col = collections.collection_adapter(f.bars)
@@ -2308,7 +2308,7 @@ class CustomCollectionsTest(fixtures.MappedTest):
         sess.add(f)
         sess.flush()
         sess.expunge_all()
-        f = sess.query(Foo).get(f.col1)
+        f = sess.get(Foo, f.col1)
         assert len(list(f.bars)) == 2
 
         strongref = list(f.bars.values())
@@ -2319,7 +2319,7 @@ class CustomCollectionsTest(fixtures.MappedTest):
         f.bars["a"] = Bar("a")
         sess.flush()
         sess.expunge_all()
-        f = sess.query(Foo).get(f.col1)
+        f = sess.get(Foo, f.col1)
         assert len(list(f.bars)) == 2
 
         replaced = set([id(b) for b in list(f.bars.values())])
@@ -2385,14 +2385,14 @@ class CustomCollectionsTest(fixtures.MappedTest):
         class Child(object):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Parent,
             sometable,
             properties={
                 "children": relationship(Child, collection_class=listcls)
             },
         )
-        mapper(Child, someothertable)
+        self.mapper_registry.map_imperatively(Child, someothertable)
 
         control = list()
         p = Parent()
@@ -2504,6 +2504,19 @@ class CustomCollectionsTest(fixtures.MappedTest):
         assert control == p.children
         assert control == list(p.children)
 
+        # test #7389
+        if hasattr(p.children, "__iadd__"):
+            control += control
+            p.children += p.children
+            assert control == list(p.children)
+
+        control[:] = [o]
+        p.children[:] = [o]
+        if hasattr(p.children, "extend"):
+            control.extend(control)
+            p.children.extend(p.children)
+            assert control == list(p.children)
+
     def test_custom(self):
         someothertable, sometable = (
             self.tables.someothertable,
@@ -2532,14 +2545,14 @@ class CustomCollectionsTest(fixtures.MappedTest):
             def __iter__(self):
                 return iter(self.data)
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Parent,
             sometable,
             properties={
                 "children": relationship(Child, collection_class=MyCollection)
             },
         )
-        mapper(Child, someothertable)
+        self.mapper_registry.map_imperatively(Child, someothertable)
 
         control = list()
         p1 = Parent()
@@ -2564,7 +2577,7 @@ class CustomCollectionsTest(fixtures.MappedTest):
         sess.flush()
         sess.expunge_all()
 
-        p2 = sess.query(Parent).get(p1.col1)
+        p2 = sess.get(Parent, p1.col1)
         o = list(p2.children)
         assert len(o) == 3
 

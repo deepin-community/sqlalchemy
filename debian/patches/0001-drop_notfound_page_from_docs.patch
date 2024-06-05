@@ -8,10 +8,10 @@ this makes this package FTBFS with Sphinx 1.6
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/doc/build/conf.py b/doc/build/conf.py
-index a1232f5..4bef976 100644
+index 9da5453..b7a5c1b 100644
 --- a/doc/build/conf.py
 +++ b/doc/build/conf.py
-@@ -296,7 +296,7 @@ html_last_updated_fmt = "%m/%d/%Y %H:%M:%S"
+@@ -319,7 +319,7 @@ html_last_updated_fmt = "%m/%d/%Y %H:%M:%S"
  
  # Additional templates that should be rendered to pages, maps page names to
  # template names.

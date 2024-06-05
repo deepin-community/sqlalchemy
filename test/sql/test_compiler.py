@@ -25,6 +25,7 @@ from sqlalchemy import Column
 from sqlalchemy import Date
 from sqlalchemy import desc
 from sqlalchemy import distinct
+from sqlalchemy import Enum
 from sqlalchemy import exc
 from sqlalchemy import except_
 from sqlalchemy import exists
@@ -32,6 +33,7 @@ from sqlalchemy import Float
 from sqlalchemy import ForeignKey
 from sqlalchemy import func
 from sqlalchemy import Index
+from sqlalchemy import insert
 from sqlalchemy import Integer
 from sqlalchemy import intersect
 from sqlalchemy import join
@@ -60,6 +62,7 @@ from sqlalchemy import type_coerce
 from sqlalchemy import types
 from sqlalchemy import union
 from sqlalchemy import union_all
+from sqlalchemy import update
 from sqlalchemy import util
 from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import oracle
@@ -78,6 +81,7 @@ from sqlalchemy.sql import operators
 from sqlalchemy.sql import table
 from sqlalchemy.sql import util as sql_util
 from sqlalchemy.sql.elements import BooleanClauseList
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.expression import ClauseElement
 from sqlalchemy.sql.expression import ClauseList
 from sqlalchemy.sql.expression import HasPrefixes
@@ -88,12 +92,16 @@ from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import eq_ignore_whitespace
+from sqlalchemy.testing import expect_raises
 from sqlalchemy.testing import expect_raises_message
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
 from sqlalchemy.testing import is_true
 from sqlalchemy.testing import mock
 from sqlalchemy.testing import ne_
+from sqlalchemy.testing import Variation
+from sqlalchemy.testing.schema import pep435_enum
+from sqlalchemy.types import UserDefinedType
 from sqlalchemy.util import u
 
 table1 = table(
@@ -839,9 +847,9 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
             "foo_bar.id AS foo_bar_id_1, "  # 2. 1st foo_bar.id, disamb from 1
             "foo.bar_id AS foo_bar_id__1, "  # 3. 2nd foo.bar_id, dedupe from 1
             "foo.id AS foo_id__1, "
-            "foo.bar_id AS foo_bar_id__1, "  # 4. 3rd foo.bar_id, same as 3
-            "foo_bar.id AS foo_bar_id__2, "  # 5. 2nd foo_bar.id
-            "foo_bar.id AS foo_bar_id__2 "  # 6. 3rd foo_bar.id, same as 5
+            "foo.bar_id AS foo_bar_id__2, "  # 4. 3rd foo.bar_id, dedupe again
+            "foo_bar.id AS foo_bar_id__3, "  # 5. 2nd foo_bar.id
+            "foo_bar.id AS foo_bar_id__4 "  # 6. 3rd foo_bar.id, dedupe again
             "FROM foo, foo_bar",
         )
         eq_(
@@ -878,9 +886,9 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
             "foo_bar.id AS foo_bar_id_1, "  # 2. 1st foo_bar.id, disamb from 1
             "foo.bar_id AS foo_bar_id__1, "  # 3. 2nd foo.bar_id, dedupe from 1
             "foo.id AS foo_id__1, "
-            "foo.bar_id AS foo_bar_id__1, "  # 4. 3rd foo.bar_id, same as 3
-            "foo_bar.id AS foo_bar_id__2, "  # 5. 2nd foo_bar.id
-            "foo_bar.id AS foo_bar_id__2 "  # 6. 3rd foo_bar.id, same as 5
+            "foo.bar_id AS foo_bar_id__2, "  # 4. 3rd foo.bar_id, dedupe again
+            "foo_bar.id AS foo_bar_id__3, "  # 5. 2nd foo_bar.id
+            "foo_bar.id AS foo_bar_id__4 "  # 6. 3rd foo_bar.id, dedupe again
             "FROM foo, foo_bar"
             ") AS anon_1",
         )
@@ -952,9 +960,9 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
             "foo_bar.id AS foo_bar_id_1, "  # 2. 1st foo_bar.id, disamb from 1
             "foo.bar_id AS foo_bar_id__1, "  # 3. 2nd foo.bar_id, dedupe from 1
             "foo.id AS foo_id__1, "
-            "foo.bar_id AS foo_bar_id__1, "  # 4. 3rd foo.bar_id, same as 3
-            "foo_bar.id AS foo_bar_id__2, "  # 5. 2nd foo_bar.id
-            "foo_bar.id AS foo_bar_id__2 "  # 6. 3rd foo_bar.id, same as 5
+            "foo.bar_id AS foo_bar_id__2, "  # 4. 3rd foo.bar_id, dedupe again
+            "foo_bar.id AS foo_bar_id__3, "  # 5. 2nd foo_bar.id
+            "foo_bar.id AS foo_bar_id__4 "  # 6. 3rd foo_bar.id, dedupe again
             "FROM foo, foo_bar",
         )
 
@@ -965,7 +973,7 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
                 LABEL_STYLE_TABLENAME_PLUS_COL
             ),
             "SELECT t.a AS t_a, t.a AS t_a__1, t.b AS t_b, "
-            "t.a AS t_a__1 FROM t",
+            "t.a AS t_a__2 FROM t",
         )
 
     def test_dupe_columns_use_labels_derived_selectable(self):
@@ -979,7 +987,7 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
         self.assert_compile(
             select(stmt).set_label_style(LABEL_STYLE_NONE),
             "SELECT anon_1.t_a, anon_1.t_a, anon_1.t_b, anon_1.t_a FROM "
-            "(SELECT t.a AS t_a, t.a AS t_a__1, t.b AS t_b, t.a AS t_a__1 "
+            "(SELECT t.a AS t_a, t.a AS t_a__1, t.b AS t_b, t.a AS t_a__2 "
             "FROM t) AS anon_1",
         )
 
@@ -992,7 +1000,7 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
                 LABEL_STYLE_TABLENAME_PLUS_COL
             ),
             "SELECT t.a AS t_a, t.a AS t_a__1, t.b AS t_b, "
-            "t.a AS t_a__1 FROM t",
+            "t.a AS t_a__2 FROM t",
         )
 
         self.assert_compile(
@@ -1000,7 +1008,7 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
                 LABEL_STYLE_TABLENAME_PLUS_COL
             ),
             "SELECT t.a AS t_a, t.a AS t_a__1, t.b AS t_b, "
-            "t.a AS t_a__1 FROM t",
+            "t.a AS t_a__2 FROM t",
         )
 
         self.assert_compile(
@@ -1008,7 +1016,7 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
                 LABEL_STYLE_TABLENAME_PLUS_COL
             ),
             "SELECT t.a AS t_a, t.a AS t_a__1, t.b AS t_b, "
-            "t.a AS t_a__1 FROM t",
+            "t.a AS t_a__2 FROM t",
         )
 
     def test_dupe_columns_use_labels_derived_selectable_mix_annotations(self):
@@ -1023,7 +1031,7 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
         self.assert_compile(
             select(stmt).set_label_style(LABEL_STYLE_NONE),
             "SELECT anon_1.t_a, anon_1.t_a, anon_1.t_b, anon_1.t_a FROM "
-            "(SELECT t.a AS t_a, t.a AS t_a__1, t.b AS t_b, t.a AS t_a__1 "
+            "(SELECT t.a AS t_a, t.a AS t_a__1, t.b AS t_b, t.a AS t_a__2 "
             "FROM t) AS anon_1",
         )
 
@@ -1044,8 +1052,8 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
         self.assert_compile(
             stmt,
             "SELECT foo.bar_id AS foo_bar_id, foo_bar.id AS foo_bar_id_1, "
-            "foo_bar.id AS foo_bar_id__1, foo_bar.id AS foo_bar_id__1, "
-            "foo_bar.id AS foo_bar_id__1 FROM foo, foo_bar",
+            "foo_bar.id AS foo_bar_id__1, foo_bar.id AS foo_bar_id__2, "
+            "foo_bar.id AS foo_bar_id__3 FROM foo, foo_bar",
         )
 
     def test_dupe_columns_use_labels_from_anon(self):
@@ -1060,7 +1068,7 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
                 LABEL_STYLE_TABLENAME_PLUS_COL
             ),
             "SELECT t_1.a AS t_1_a, t_1.a AS t_1_a__1, t_1.b AS t_1_b, "
-            "t_1.a AS t_1_a__1 "
+            "t_1.a AS t_1_a__2 "
             "FROM t AS t_1",
         )
 
@@ -1218,6 +1226,14 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
         self.assert_compile(
             select(~(~exists(1))),
             "SELECT NOT (NOT (EXISTS (SELECT 1))) AS anon_1",
+        )
+
+        self.assert_compile(
+            exists(42)
+            .select_from(table1)
+            .where(table1.c.name == "foo", table1.c.description == "bar"),
+            "EXISTS (SELECT 42 FROM mytable WHERE mytable.name = :name_1 "
+            "AND mytable.description = :description_1)",
         )
 
     def test_exists_method(self):
@@ -2536,6 +2552,62 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
             "WHERE mytable.myid = myothertable.otherid ORDER BY myid",
         )
 
+    def test_deduping_hash_algo(self):
+        """related to #7153.
+
+        testing new feature "add_hash" of _anon_label which adds an additional
+        integer value as part of what the anon label is deduplicated upon.
+
+        """
+
+        class Thing(ColumnElement):
+            def __init__(self, hash_):
+                self._hash = hash_
+
+            def __hash__(self):
+                return self._hash
+
+        t1 = Thing(10)
+        t2 = Thing(11)
+
+        # this is the collision case.  therefore we assert that this
+        # add_hash  has to be below 16 bits.
+        # eq_(
+        #     t1._anon_label('hi', add_hash=65537),
+        #     t2._anon_label('hi', add_hash=1)
+        # )
+        with expect_raises(AssertionError):
+            t1._anon_label("hi", add_hash=65536)
+
+        for i in range(50):
+            ne_(
+                t1._anon_label("hi", add_hash=i),
+                t2._anon_label("hi", add_hash=1),
+            )
+
+    def test_deduping_unique_across_selects(self):
+        """related to #7153
+
+        looking to see that dedupe anon labels use a unique hash not only
+        within each statement but across multiple statements.
+
+        """
+
+        s1 = select(null(), null())
+
+        s2 = select(true(), true())
+
+        s3 = union(s1, s2)
+
+        self.assert_compile(
+            s3,
+            "SELECT NULL AS anon_1, NULL AS anon__1 " "UNION "
+            # without the feature tested in test_deduping_hash_algo we'd get
+            # "SELECT true AS anon_2, true AS anon__1",
+            "SELECT true AS anon_2, true AS anon__2",
+            dialect="default_enhanced",
+        )
+
     def test_compound_grouping(self):
         s = select(column("foo"), column("bar")).select_from(text("bat"))
 
@@ -3140,7 +3212,7 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
             (exprs[1], "hoho", "hoho(mytable.myid)", "hoho_1"),
             (
                 exprs[2],
-                "_no_label",
+                "name",
                 "CAST(mytable.name AS NUMERIC)",
                 "name",  # due to [ticket:4449]
             ),
@@ -3164,6 +3236,7 @@ class SelectTest(fixtures.TestBase, AssertsCompiledSQL):
                 t = table1
 
             s1 = select(col).select_from(t)
+            eq_(col._proxy_key, key if key != "_no_label" else None)
             eq_(list(s1.subquery().c.keys()), [key])
 
             if lbl:
@@ -3589,6 +3662,97 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
             s,
         )
 
+    def test_bind_param_escaping(self):
+        """general bind param escape unit tests added as a result of
+        #8053.
+
+        The final application of an escaped param name
+        was moved out of compiler and into DefaultExecutionContext in
+        related issue #8056.
+
+        However in #8113 we made this conditional to suit usage recipes
+        posted in the FAQ.
+
+
+        """
+
+        SomeEnum = pep435_enum("SomeEnum")
+        one = SomeEnum("one", 1)
+        SomeEnum("two", 2)
+
+        t = Table(
+            "t",
+            MetaData(),
+            Column("_id", Integer, primary_key=True),
+            Column("_data", Enum(SomeEnum)),
+        )
+
+        class MyCompiler(compiler.SQLCompiler):
+            def bindparam_string(self, name, **kw):
+                kw["escaped_from"] = name
+                return super(MyCompiler, self).bindparam_string(
+                    '"%s"' % name, **kw
+                )
+
+        dialect = default.DefaultDialect()
+        dialect.statement_compiler = MyCompiler
+
+        self.assert_compile(
+            t.insert(),
+            'INSERT INTO t (_id, _data) VALUES (:"_id", :"_data")',
+            dialect=dialect,
+        )
+
+        compiled = t.insert().compile(
+            dialect=dialect, compile_kwargs=dict(compile_keys=("_id", "_data"))
+        )
+
+        # not escaped
+        params = compiled.construct_params(
+            {"_id": 1, "_data": one}, escape_names=False
+        )
+        eq_(params, {"_id": 1, "_data": one})
+
+        # escaped by default
+        params = compiled.construct_params({"_id": 1, "_data": one})
+        eq_(params, {'"_id"': 1, '"_data"': one})
+
+        # escaped here as well
+        eq_(compiled.params, {'"_data"': None, '"_id"': None})
+
+        # bind processors aren't part of this
+        eq_(compiled._bind_processors, {"_data": mock.ANY})
+
+        dialect.paramstyle = "pyformat"
+        compiled = t.insert().compile(
+            dialect=dialect, compile_kwargs=dict(compile_keys=("_id", "_data"))
+        )
+
+        # FAQ recipe works
+        eq_(
+            compiled.string % compiled.params,
+            "INSERT INTO t (_id, _data) VALUES (None, None)",
+        )
+
+    def test_expanding_non_expanding_conflict(self):
+        """test #8018"""
+
+        s = select(
+            literal("x").in_(bindparam("q")),
+            bindparam("q"),
+        )
+
+        with expect_raises_message(
+            exc.CompileError,
+            r"Can't reuse bound parameter name 'q' in both 'expanding' "
+            r"\(e.g. within an IN expression\) and non-expanding contexts.  "
+            "If this parameter is to "
+            "receive a list/array value, set 'expanding=True' on "
+            "it for expressions that aren't IN, otherwise use "
+            "a different parameter name.",
+        ):
+            str(s)
+
     def test_unique_binds_no_clone_collision(self):
         """test #6824"""
         bp = bindparam("foo", unique=True)
@@ -3602,7 +3766,7 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         # the label name, but that's a different issue
         self.assert_compile(
             stmt1,
-            "SELECT :foo_1 AS anon_1, :foo_1 AS anon__1, :foo_1 AS anon__1",
+            "SELECT :foo_1 AS anon_1, :foo_1 AS anon__1, :foo_1 AS anon__2",
         )
 
     def _test_binds_no_hash_collision(self):
@@ -3682,7 +3846,7 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         subq = select(l).subquery()
 
         # this creates a ColumnClause as a proxy to the Label() that has
-        # an anoymous name, so the column has one too.
+        # an anonymous name, so the column has one too.
         anon_col = subq.c[0]
         assert isinstance(anon_col.name, elements._anonymous_label)
 
@@ -3872,7 +4036,8 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
             extracted_parameters=s1_cache_key[1],
         )
 
-    def test_construct_params_w_bind_clones_post(self):
+    @testing.combinations(True, False, argnames="adapt_before_key")
+    def test_construct_params_w_bind_clones_post(self, adapt_before_key):
         """test that a BindParameter that has been cloned after the cache
         key was generated still matches up when construct_params()
         is called with an extracted parameter collection.
@@ -3896,7 +4061,12 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         # it's anonymous so unique=True
         is_true(original_bind.unique)
 
-        # cache key against hte original param
+        # test #7903 - adapt the statement *before* we make the cache
+        # key also
+        if adapt_before_key:
+            stmt = sql_util.ClauseAdapter(table1).traverse(stmt)
+
+        # cache key against the original param
         cache_key = stmt._generate_cache_key()
 
         # now adapt the statement
@@ -3948,7 +4118,8 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
             {"myid_1": 10},
         )
 
-    def test_construct_duped_params_w_bind_clones_post(self):
+    @testing.combinations(True, False, argnames="adapt_before_key")
+    def test_construct_duped_params_w_bind_clones_post(self, adapt_before_key):
         """same as previous test_construct_params_w_bind_clones_post but
         where the binds have been used
         repeatedly, and the adaption occurs on a per-subquery basis.
@@ -3971,7 +4142,11 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         # it's anonymous so unique=True
         is_true(original_bind.unique)
 
-        # cache key against hte original param
+        # variant that exercises #7903
+        if adapt_before_key:
+            stmt = sql_util.ClauseAdapter(table1).traverse(stmt)
+
+        # cache key against the original param
         cache_key = stmt._generate_cache_key()
 
         # now adapt the statement and separately adapt the inner
@@ -4052,7 +4227,7 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         be unique, still matches up when construct_params()
         is called with an extracted parameter collection.
 
-        other ORM feaures like optimized_compare() end up doing something
+        other ORM features like optimized_compare() end up doing something
         like this, such as if there are multiple "has()" or "any()" which would
         have cloned the join condition and changed the values of bound
         parameters.
@@ -4110,13 +4285,28 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
             {"myid_1": 20, "myid_2": 18},
         )
 
+    @testing.combinations("default", "default_qmark", argnames="dialect")
+    def test_literal_execute_combinations(self, dialect):
+        """test #10142"""
+
+        a = bindparam("a", value="abc", literal_execute=True)
+        b = bindparam("b", value="def", literal_execute=True)
+        c = bindparam("c", value="ghi", literal_execute=True)
+        self.assert_compile(
+            select(a, b, a, c),
+            "SELECT 'abc' AS anon_1, 'def' AS anon_2, 'abc' AS anon__1, "
+            "'ghi' AS anon_3",
+            render_postcompile=True,
+            dialect=dialect,
+        )
+
     def test_tuple_expanding_in_no_values(self):
         expr = tuple_(table1.c.myid, table1.c.name).in_(
             [(1, "foo"), (5, "bar")]
         )
         self.assert_compile(
             expr,
-            "(mytable.myid, mytable.name) IN " "([POSTCOMPILE_param_1])",
+            "(mytable.myid, mytable.name) IN " "(__[POSTCOMPILE_param_1])",
             checkparams={"param_1": [(1, "foo"), (5, "bar")]},
             check_post_param={"param_1": [(1, "foo"), (5, "bar")]},
             check_literal_execute={},
@@ -4151,7 +4341,7 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         dialect.tuple_in_values = True
         self.assert_compile(
             tuple_(table1.c.myid, table1.c.name).in_([(1, "foo"), (5, "bar")]),
-            "(mytable.myid, mytable.name) IN " "([POSTCOMPILE_param_1])",
+            "(mytable.myid, mytable.name) IN " "(__[POSTCOMPILE_param_1])",
             dialect=dialect,
             checkparams={"param_1": [(1, "foo"), (5, "bar")]},
             check_post_param={"param_1": [(1, "foo"), (5, "bar")]},
@@ -4287,7 +4477,7 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
             tuple_(table1.c.myid, table1.c.name).in_(
                 bindparam("foo", expanding=True)
             ),
-            "(mytable.myid, mytable.name) IN ([POSTCOMPILE_foo])",
+            "(mytable.myid, mytable.name) IN (__[POSTCOMPILE_foo])",
         )
 
         dialect = default.DefaultDialect()
@@ -4296,13 +4486,13 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
             tuple_(table1.c.myid, table1.c.name).in_(
                 bindparam("foo", expanding=True)
             ),
-            "(mytable.myid, mytable.name) IN ([POSTCOMPILE_foo])",
+            "(mytable.myid, mytable.name) IN (__[POSTCOMPILE_foo])",
             dialect=dialect,
         )
 
         self.assert_compile(
             table1.c.myid.in_(bindparam("foo", expanding=True)),
-            "mytable.myid IN ([POSTCOMPILE_foo])",
+            "mytable.myid IN (__[POSTCOMPILE_foo])",
         )
 
     def test_limit_offset_select_literal_binds(self):
@@ -4348,6 +4538,51 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
             "OR mytable.myid = :myid_2 OR mytable.myid = :myid_3",
         )
 
+    @testing.combinations("plain", "expanding", argnames="exprtype")
+    def test_literal_bind_typeerror(self, exprtype):
+        """test #8800"""
+
+        if exprtype == "expanding":
+            stmt = select(table1).where(
+                table1.c.myid.in_([("tuple",), ("tuple",)])
+            )
+        elif exprtype == "plain":
+            stmt = select(table1).where(table1.c.myid == ("tuple",))
+        else:
+            assert False
+
+        with expect_raises_message(
+            exc.CompileError,
+            r"Could not render literal value \"\(\'tuple\',\)\" "
+            r"with datatype INTEGER; see parent "
+            r"stack trace for more detail.",
+        ):
+            stmt.compile(compile_kwargs={"literal_binds": True})
+
+    @testing.combinations("plain", "expanding", argnames="exprtype")
+    def test_literal_bind_dont_know_how_to_quote(self, exprtype):
+        """test #8800"""
+
+        class MyType(UserDefinedType):
+            def get_col_spec(self, **kw):
+                return "MYTYPE"
+
+        col = column("x", MyType())
+
+        if exprtype == "expanding":
+            stmt = select(table1).where(col.in_([("tuple",), ("tuple",)]))
+        elif exprtype == "plain":
+            stmt = select(table1).where(col == ("tuple",))
+        else:
+            assert False
+
+        with expect_raises_message(
+            exc.CompileError,
+            r"No literal value renderer is available for literal "
+            r"value \"\('tuple',\)\" with datatype MYTYPE",
+        ):
+            stmt.compile(compile_kwargs={"literal_binds": True})
+
     @testing.fixture
     def ansi_compiler_fixture(self):
         dialect = default.DefaultDialect()
@@ -4363,7 +4598,7 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         (
             "one",
             select(literal("someliteral")),
-            "SELECT [POSTCOMPILE_param_1] AS anon_1",
+            "SELECT __[POSTCOMPILE_param_1] AS anon_1",
             dict(
                 check_literal_execute={"param_1": "someliteral"},
                 check_post_param={},
@@ -4372,14 +4607,14 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         (
             "two",
             select(table1.c.myid + 3),
-            "SELECT mytable.myid + [POSTCOMPILE_myid_1] "
+            "SELECT mytable.myid + __[POSTCOMPILE_myid_1] "
             "AS anon_1 FROM mytable",
             dict(check_literal_execute={"myid_1": 3}, check_post_param={}),
         ),
         (
             "three",
             select(table1.c.myid.in_([4, 5, 6])),
-            "SELECT mytable.myid IN ([POSTCOMPILE_myid_1]) "
+            "SELECT mytable.myid IN (__[POSTCOMPILE_myid_1]) "
             "AS anon_1 FROM mytable",
             dict(
                 check_literal_execute={"myid_1": [4, 5, 6]},
@@ -4389,14 +4624,14 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         (
             "four",
             select(func.mod(table1.c.myid, 5)),
-            "SELECT mod(mytable.myid, [POSTCOMPILE_mod_2]) "
+            "SELECT mod(mytable.myid, __[POSTCOMPILE_mod_2]) "
             "AS mod_1 FROM mytable",
             dict(check_literal_execute={"mod_2": 5}, check_post_param={}),
         ),
         (
             "five",
             select(literal("foo").in_([])),
-            "SELECT [POSTCOMPILE_param_1] IN ([POSTCOMPILE_param_2]) "
+            "SELECT __[POSTCOMPILE_param_1] IN (__[POSTCOMPILE_param_2]) "
             "AS anon_1",
             dict(
                 check_literal_execute={"param_1": "foo", "param_2": []},
@@ -4406,7 +4641,7 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         (
             "six",
             select(literal(util.b("foo"))),
-            "SELECT [POSTCOMPILE_param_1] AS anon_1",
+            "SELECT __[POSTCOMPILE_param_1] AS anon_1",
             dict(
                 check_literal_execute={"param_1": util.b("foo")},
                 check_post_param={},
@@ -4415,7 +4650,7 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
         (
             "seven",
             select(table1.c.myid == bindparam("foo", callable_=lambda: 5)),
-            "SELECT mytable.myid = [POSTCOMPILE_foo] AS anon_1 FROM mytable",
+            "SELECT mytable.myid = __[POSTCOMPILE_foo] AS anon_1 FROM mytable",
             dict(check_literal_execute={"foo": 5}, check_post_param={}),
         ),
         argnames="stmt, expected, kw",
@@ -4437,7 +4672,7 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
                 table1.c.myid == bindparam("foo", 5, literal_execute=True)
             ),
             "SELECT mytable.myid FROM mytable "
-            "WHERE mytable.myid = [POSTCOMPILE_foo]",
+            "WHERE mytable.myid = __[POSTCOMPILE_foo]",
         )
 
     def test_render_literal_execute_parameter_literal_binds(self):
@@ -4482,7 +4717,7 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
                 table1.c.myid.in_(bindparam("foo", expanding=True))
             ),
             "SELECT mytable.myid FROM mytable "
-            "WHERE mytable.myid IN ([POSTCOMPILE_foo])",
+            "WHERE mytable.myid IN (__[POSTCOMPILE_foo])",
         )
 
     def test_render_expanding_parameter_literal_binds(self):
@@ -4576,6 +4811,291 @@ class BindParameterTest(AssertsCompiledSQL, fixtures.TestBase):
             self.assert_compile(
                 stmt, expected, literal_binds=True, params=params
             )
+
+    standalone_escape = testing.combinations(
+        ("normalname", "normalname"),
+        ("_name", "_name"),
+        ("[BracketsAndCase]", "_BracketsAndCase_"),
+        ("has spaces", "has_spaces"),
+        argnames="paramname, expected",
+    )
+
+    @standalone_escape
+    @testing.variation("use_positional", [True, False])
+    def test_standalone_bindparam_escape(
+        self, paramname, expected, use_positional
+    ):
+        stmt = select(table1.c.myid).where(
+            table1.c.name == bindparam(paramname, value="x")
+        )
+        if use_positional:
+            self.assert_compile(
+                stmt,
+                "SELECT mytable.myid FROM mytable WHERE mytable.name = ?",
+                params={paramname: "y"},
+                checkpositional=("y",),
+                dialect="sqlite",
+            )
+        else:
+            self.assert_compile(
+                stmt,
+                "SELECT mytable.myid FROM mytable WHERE mytable.name = :%s"
+                % (expected,),
+                params={paramname: "y"},
+                checkparams={expected: "y"},
+                dialect="default",
+            )
+
+    @standalone_escape
+    @testing.variation("use_assert_compile", [True, False])
+    @testing.variation("use_positional", [True, False])
+    def test_standalone_bindparam_escape_expanding(
+        self, paramname, expected, use_assert_compile, use_positional
+    ):
+        stmt = select(table1.c.myid).where(
+            table1.c.name.in_(bindparam(paramname, value=["a", "b"]))
+        )
+        if use_assert_compile:
+            if use_positional:
+                self.assert_compile(
+                    stmt,
+                    "SELECT mytable.myid FROM mytable "
+                    "WHERE mytable.name IN (?, ?)",
+                    params={paramname: ["y", "z"]},
+                    # NOTE: this is what render_postcompile will do right now
+                    # if you run construct_params().  render_postcompile mode
+                    # is not actually used by the execution internals, it's for
+                    # user-facing compilation code.  So this is likely a
+                    # current limitation of construct_params() which is not
+                    # doing the full blown postcompile; just assert that's
+                    # what it does for now.  it likely should be corrected
+                    # to make more sense.
+                    checkpositional=(["y", "z"], ["y", "z"]),
+                    dialect="sqlite",
+                    render_postcompile=True,
+                )
+            else:
+                self.assert_compile(
+                    stmt,
+                    "SELECT mytable.myid FROM mytable WHERE mytable.name IN "
+                    "(:%s_1, :%s_2)" % (expected, expected),
+                    params={paramname: ["y", "z"]},
+                    # NOTE: this is what render_postcompile will do right now
+                    # if you run construct_params().  render_postcompile mode
+                    # is not actually used by the execution internals, it's for
+                    # user-facing compilation code.  So this is likely a
+                    # current limitation of construct_params() which is not
+                    # doing the full blown postcompile; just assert that's
+                    # what it does for now.  it likely should be corrected
+                    # to make more sense.
+                    checkparams={
+                        "%s_1" % expected: ["y", "z"],
+                        "%s_2" % expected: ["y", "z"],
+                    },
+                    dialect="default",
+                    render_postcompile=True,
+                )
+        else:
+            # this is what DefaultDialect actually does.
+            # this should be matched to DefaultDialect._init_compiled()
+            if use_positional:
+                compiled = stmt.compile(
+                    dialect=default.DefaultDialect(paramstyle="qmark")
+                )
+            else:
+                compiled = stmt.compile(dialect=default.DefaultDialect())
+            checkparams = compiled.construct_params(
+                {paramname: ["y", "z"]}, escape_names=False
+            )
+            # nothing actually happened.  if the compiler had
+            # render_postcompile set, the
+            # above weird param thing happens
+            eq_(checkparams, {paramname: ["y", "z"]})
+            expanded_state = compiled._process_parameters_for_postcompile(
+                checkparams
+            )
+            eq_(
+                expanded_state.additional_parameters,
+                {"%s_1" % (expected,): "y", "%s_2" % (expected,): "z"},
+            )
+            if use_positional:
+                eq_(
+                    expanded_state.positiontup,
+                    ["%s_1" % (expected,), "%s_2" % (expected,)],
+                )
+
+
+class CrudParamOverlapTest(AssertsCompiledSQL, fixtures.TestBase):
+    """tests for #9075.
+
+    we apparently allow same-column-named bindparams in values(), even though
+    we do *not* allow same-column-named bindparams in other parts of the
+    statement, but only if the bindparam is associated with that column in the
+    VALUES / SET clause. If you use a name that matches that of a column in
+    values() but associate it with a different column, you also get the error.
+
+    This is supported, see
+    test_insert.py::InsertTest::test_binds_that_match_columns and
+    test_update.py::UpdateTest::test_binds_that_match_columns.  The use
+    case makes sense because the "overlapping binds" issue is that using
+    a column name in bindparam() will conflict with the bindparam()
+    that crud.py is going to make for that column in VALUES / SET; but if we
+    are replacing the actual expression that would be in VALUES / SET, then
+    it's fine, there is no conflict.
+
+    The test suite is extended in
+    test/orm/test_core_compilation.py with ORM mappings that caused
+    the failure that was fixed by #9075.
+
+
+    """
+
+    __dialect__ = "default"
+
+    @testing.fixture(
+        params=Variation.generate_cases("type_", ["lowercase", "uppercase"]),
+        ids=["lowercase", "uppercase"],
+    )
+    def crud_table_fixture(self, request):
+        type_ = request.param
+
+        if type_.lowercase:
+            table1 = table(
+                "mytable",
+                column("myid", Integer),
+                column("name", String),
+                column("description", String),
+            )
+        elif type_.uppercase:
+            table1 = Table(
+                "mytable",
+                MetaData(),
+                Column("myid", Integer),
+                Column("name", String),
+                Column("description", String),
+            )
+        else:
+            type_.fail()
+
+        yield table1
+
+    def test_same_named_binds_insert_values(self, crud_table_fixture):
+        table1 = crud_table_fixture
+        stmt = insert(table1).values(
+            myid=bindparam("myid"),
+            description=func.coalesce(bindparam("description"), "default"),
+        )
+        self.assert_compile(
+            stmt,
+            "INSERT INTO mytable (myid, description) VALUES "
+            "(:myid, coalesce(:description, :coalesce_1))",
+        )
+
+        self.assert_compile(
+            stmt,
+            "INSERT INTO mytable (myid, description) VALUES "
+            "(:myid, coalesce(:description, :coalesce_1))",
+            params={"myid": 5, "description": "foo"},
+            checkparams={
+                "coalesce_1": "default",
+                "description": "foo",
+                "myid": 5,
+            },
+        )
+
+        self.assert_compile(
+            stmt,
+            "INSERT INTO mytable (myid, name, description) VALUES "
+            "(:myid, :name, coalesce(:description, :coalesce_1))",
+            params={"myid": 5, "description": "foo", "name": "bar"},
+            checkparams={
+                "coalesce_1": "default",
+                "description": "foo",
+                "myid": 5,
+                "name": "bar",
+            },
+        )
+
+    def test_same_named_binds_update_values(self, crud_table_fixture):
+        table1 = crud_table_fixture
+        stmt = update(table1).values(
+            myid=bindparam("myid"),
+            description=func.coalesce(bindparam("description"), "default"),
+        )
+        self.assert_compile(
+            stmt,
+            "UPDATE mytable SET myid=:myid, "
+            "description=coalesce(:description, :coalesce_1)",
+        )
+
+        self.assert_compile(
+            stmt,
+            "UPDATE mytable SET myid=:myid, "
+            "description=coalesce(:description, :coalesce_1)",
+            params={"myid": 5, "description": "foo"},
+            checkparams={
+                "coalesce_1": "default",
+                "description": "foo",
+                "myid": 5,
+            },
+        )
+
+        self.assert_compile(
+            stmt,
+            "UPDATE mytable SET myid=:myid, name=:name, "
+            "description=coalesce(:description, :coalesce_1)",
+            params={"myid": 5, "description": "foo", "name": "bar"},
+            checkparams={
+                "coalesce_1": "default",
+                "description": "foo",
+                "myid": 5,
+                "name": "bar",
+            },
+        )
+
+    def test_different_named_binds_insert_values(self, crud_table_fixture):
+        table1 = crud_table_fixture
+        stmt = insert(table1).values(
+            myid=bindparam("myid"),
+            name=func.coalesce(bindparam("description"), "default"),
+        )
+        self.assert_compile(
+            stmt,
+            "INSERT INTO mytable (myid, name) VALUES "
+            "(:myid, coalesce(:description, :coalesce_1))",
+        )
+
+        with expect_raises_message(
+            exc.CompileError, r"bindparam\(\) name 'description' is reserved "
+        ):
+            stmt.compile(column_keys=["myid", "description"])
+
+        with expect_raises_message(
+            exc.CompileError, r"bindparam\(\) name 'description' is reserved "
+        ):
+            stmt.compile(column_keys=["myid", "description", "name"])
+
+    def test_different_named_binds_update_values(self, crud_table_fixture):
+        table1 = crud_table_fixture
+        stmt = update(table1).values(
+            myid=bindparam("myid"),
+            name=func.coalesce(bindparam("description"), "default"),
+        )
+        self.assert_compile(
+            stmt,
+            "UPDATE mytable SET myid=:myid, "
+            "name=coalesce(:description, :coalesce_1)",
+        )
+
+        with expect_raises_message(
+            exc.CompileError, r"bindparam\(\) name 'description' is reserved "
+        ):
+            stmt.compile(column_keys=["myid", "description"])
+
+        with expect_raises_message(
+            exc.CompileError, r"bindparam\(\) name 'description' is reserved "
+        ):
+            stmt.compile(column_keys=["myid", "description", "name"])
 
 
 class UnsupportedTest(fixtures.TestBase):
@@ -5064,7 +5584,7 @@ class DDLTest(fixtures.TestBase, AssertsCompiledSQL):
 
         self.assert_compile(
             schema.CreateTable(t1),
-            "CREATE TABLE [SCHEMA__none].t1 (q INTEGER)",
+            "CREATE TABLE __[SCHEMA__none].t1 (q INTEGER)",
             schema_translate_map=schema_translate_map,
         )
         self.assert_compile(
@@ -5076,7 +5596,7 @@ class DDLTest(fixtures.TestBase, AssertsCompiledSQL):
 
         self.assert_compile(
             schema.CreateTable(t2),
-            "CREATE TABLE [SCHEMA_foo].t2 (q INTEGER)",
+            "CREATE TABLE __[SCHEMA_foo].t2 (q INTEGER)",
             schema_translate_map=schema_translate_map,
         )
         self.assert_compile(
@@ -5088,7 +5608,7 @@ class DDLTest(fixtures.TestBase, AssertsCompiledSQL):
 
         self.assert_compile(
             schema.CreateTable(t3),
-            "CREATE TABLE [SCHEMA_bar].t3 (q INTEGER)",
+            "CREATE TABLE __[SCHEMA_bar].t3 (q INTEGER)",
             schema_translate_map=schema_translate_map,
         )
         self.assert_compile(
@@ -5109,7 +5629,7 @@ class DDLTest(fixtures.TestBase, AssertsCompiledSQL):
 
         self.assert_compile(
             schema.CreateTable(t1),
-            "CREATE TABLE [SCHEMA__none].t1 (q INTEGER)",
+            "CREATE TABLE __[SCHEMA__none].t1 (q INTEGER)",
             schema_translate_map=schema_translate_map,
         )
         self.assert_compile(
@@ -5121,7 +5641,7 @@ class DDLTest(fixtures.TestBase, AssertsCompiledSQL):
 
         self.assert_compile(
             schema.CreateTable(t2),
-            "CREATE TABLE [SCHEMA_foo % ^ #].t2 (q INTEGER)",
+            "CREATE TABLE __[SCHEMA_foo % ^ #].t2 (q INTEGER)",
             schema_translate_map=schema_translate_map,
         )
         self.assert_compile(
@@ -5133,7 +5653,7 @@ class DDLTest(fixtures.TestBase, AssertsCompiledSQL):
 
         self.assert_compile(
             schema.CreateTable(t3),
-            "CREATE TABLE [SCHEMA_bar {}].t3 (q INTEGER)",
+            "CREATE TABLE __[SCHEMA_bar {}].t3 (q INTEGER)",
             schema_translate_map=schema_translate_map,
         )
         self.assert_compile(
@@ -5178,39 +5698,39 @@ class DDLTest(fixtures.TestBase, AssertsCompiledSQL):
 
         self.assert_compile(
             schema.CreateSequence(s1),
-            "CREATE SEQUENCE [SCHEMA__none].s1 START WITH 1",
+            "CREATE SEQUENCE __[SCHEMA__none].s1 START WITH 1",
             schema_translate_map=schema_translate_map,
         )
 
         self.assert_compile(
             s1.next_value(),
-            "<next sequence value: [SCHEMA__none].s1>",
+            "<next sequence value: __[SCHEMA__none].s1>",
             schema_translate_map=schema_translate_map,
             dialect="default_enhanced",
         )
 
         self.assert_compile(
             schema.CreateSequence(s2),
-            "CREATE SEQUENCE [SCHEMA_foo].s2 START WITH 1",
+            "CREATE SEQUENCE __[SCHEMA_foo].s2 START WITH 1",
             schema_translate_map=schema_translate_map,
         )
 
         self.assert_compile(
             s2.next_value(),
-            "<next sequence value: [SCHEMA_foo].s2>",
+            "<next sequence value: __[SCHEMA_foo].s2>",
             schema_translate_map=schema_translate_map,
             dialect="default_enhanced",
         )
 
         self.assert_compile(
             schema.CreateSequence(s3),
-            "CREATE SEQUENCE [SCHEMA_bar].s3 START WITH 1",
+            "CREATE SEQUENCE __[SCHEMA_bar].s3 START WITH 1",
             schema_translate_map=schema_translate_map,
         )
 
         self.assert_compile(
             s3.next_value(),
-            "<next sequence value: [SCHEMA_bar].s3>",
+            "<next sequence value: __[SCHEMA_bar].s3>",
             schema_translate_map=schema_translate_map,
             dialect="default_enhanced",
         )
@@ -5248,24 +5768,24 @@ class DDLTest(fixtures.TestBase, AssertsCompiledSQL):
 
         self.assert_compile(
             schema.CreateTable(t1),
-            "CREATE TABLE [SCHEMA__none].t1 "
-            "(id INTEGER DEFAULT <next sequence value: [SCHEMA__none].s1> "
+            "CREATE TABLE __[SCHEMA__none].t1 "
+            "(id INTEGER DEFAULT <next sequence value: __[SCHEMA__none].s1> "
             "NOT NULL, PRIMARY KEY (id))",
             schema_translate_map=schema_translate_map,
             dialect="default_enhanced",
         )
         self.assert_compile(
             schema.CreateTable(t2),
-            "CREATE TABLE [SCHEMA__none].t2 "
-            "(id INTEGER DEFAULT <next sequence value: [SCHEMA_foo].s2> "
+            "CREATE TABLE __[SCHEMA__none].t2 "
+            "(id INTEGER DEFAULT <next sequence value: __[SCHEMA_foo].s2> "
             "NOT NULL, PRIMARY KEY (id))",
             schema_translate_map=schema_translate_map,
             dialect="default_enhanced",
         )
         self.assert_compile(
             schema.CreateTable(t3),
-            "CREATE TABLE [SCHEMA__none].t3 "
-            "(id INTEGER DEFAULT <next sequence value: [SCHEMA_bar].s3> "
+            "CREATE TABLE __[SCHEMA__none].t3 "
+            "(id INTEGER DEFAULT <next sequence value: __[SCHEMA_bar].s3> "
             "NOT NULL, PRIMARY KEY (id))",
             schema_translate_map=schema_translate_map,
             dialect="default_enhanced",
@@ -5309,7 +5829,7 @@ class DDLTest(fixtures.TestBase, AssertsCompiledSQL):
         for kw in ("onupdate", "ondelete", "initially"):
             for phrase in (
                 "NOT SQL",
-                "INITALLY NOT SQL",
+                "INITIALLY NOT SQL",
                 "FOO RESTRICT",
                 "CASCADE WRONG",
                 "SET  NULL",
@@ -5459,12 +5979,12 @@ class SchemaTest(fixtures.TestBase, AssertsCompiledSQL):
 
         self.assert_compile(
             stmt,
-            "SELECT [SCHEMA__none].myothertable.otherid, "
-            "[SCHEMA__none].myothertable.othername, "
+            "SELECT __[SCHEMA__none].myothertable.otherid, "
+            "__[SCHEMA__none].myothertable.othername, "
             "mytable_1.myid, mytable_1.name, mytable_1.description "
-            "FROM [SCHEMA__none].myothertable JOIN "
-            "[SCHEMA__none].mytable AS mytable_1 "
-            "ON [SCHEMA__none].myothertable.otherid = mytable_1.myid "
+            "FROM __[SCHEMA__none].myothertable JOIN "
+            "__[SCHEMA__none].mytable AS mytable_1 "
+            "ON __[SCHEMA__none].myothertable.otherid = mytable_1.myid "
             "WHERE mytable_1.name = :name_1",
             schema_translate_map=schema_translate_map,
         )
@@ -5833,6 +6353,14 @@ class CorrelateTest(fixtures.TestBase, AssertsCompiledSQL):
         self._assert_where_all_correlated(
             select(t1, t2).where(
                 t2.c.a == s1.correlate_except(value).scalar_subquery()
+            )
+        )
+
+    def test_correlate_except_empty(self):
+        t1, t2, s1 = self._fixture()
+        self._assert_where_all_correlated(
+            select(t1, t2).where(
+                t2.c.a == s1.correlate_except().scalar_subquery()
             )
         )
 

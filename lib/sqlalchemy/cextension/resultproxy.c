@@ -1,6 +1,6 @@
 /*
 resultproxy.c
-Copyright (C) 2010-2021 the SQLAlchemy authors and contributors <see AUTHORS file>
+Copyright (C) 2010-2023 the SQLAlchemy authors and contributors <see AUTHORS file>
 Copyright (C) 2010-2011 Gaetan de Menten gdementen@gmail.com
 
 This module is part of SQLAlchemy and is released under
@@ -19,6 +19,12 @@ typedef int Py_ssize_t;
 typedef Py_ssize_t (*lenfunc)(PyObject *);
 #define PyInt_FromSsize_t(x) PyInt_FromLong(x)
 typedef intargfunc ssizeargfunc;
+#endif
+
+#if PY_VERSION_HEX >= 0x030c0000
+#    define PY_RAISE_SLICE_FOR_MAPPING PyExc_KeyError
+#else
+#    define PY_RAISE_SLICE_FOR_MAPPING PyExc_TypeError
 #endif
 
 #if PY_MAJOR_VERSION < 3
@@ -369,7 +375,7 @@ BaseRow_getitem_by_object(BaseRow *self, PyObject *key, int asmapping)
 
     if (record == NULL) {
         if (PySlice_Check(key)) {
-            PyErr_Format(PyExc_TypeError, "can't use slices for mapping access");
+            PyErr_Format(PY_RAISE_SLICE_FOR_MAPPING, "can't use slices for mapping access");
             return NULL;
         }
         record = PyObject_CallMethod(self->parent, "_key_fallback",
@@ -442,7 +448,7 @@ BaseRow_subscript_impl(BaseRow *self, PyObject *key, int asmapping)
 
         // support negative indexes.   We can also call PySequence_GetItem,
         // but here we can stay with the simpler tuple protocol
-        // rather than the seqeunce protocol which has to check for
+        // rather than the sequence protocol which has to check for
         // __getitem__ methods etc.
         if (index < 0)
             index += (long)BaseRow_length(self);
@@ -467,7 +473,7 @@ BaseRow_subscript_impl(BaseRow *self, PyObject *key, int asmapping)
 
         // support negative indexes.   We can also call PySequence_GetItem,
         // but here we can stay with the simpler tuple protocol
-        // rather than the seqeunce protocol which has to check for
+        // rather than the sequence protocol which has to check for
         // __getitem__ methods etc.
         if (index < 0)
             index += (long)BaseRow_length(self);
@@ -541,6 +547,7 @@ BaseRow_getattro(BaseRow *self, PyObject *name)
                 "Could not locate column in row for column '%.200s'",
                 PyBytes_AS_STRING(err_bytes)
             );
+        Py_DECREF(err_bytes);
 #else
         PyErr_Format(
                 PyExc_AttributeError,

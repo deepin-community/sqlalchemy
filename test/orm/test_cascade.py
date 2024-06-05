@@ -14,16 +14,17 @@ from sqlalchemy.orm import class_mapper
 from sqlalchemy.orm import configure_mappers
 from sqlalchemy.orm import exc as orm_exc
 from sqlalchemy.orm import foreign
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import object_mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import util as orm_util
+from sqlalchemy.orm import with_parent
 from sqlalchemy.orm.attributes import instance_state
 from sqlalchemy.orm.collections import attribute_mapped_collection
 from sqlalchemy.orm.decl_api import declarative_base
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
+from sqlalchemy.testing import assert_warns_message
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import in_
@@ -72,7 +73,7 @@ class CascadeArgTest(fixtures.MappedTest):
         User, Address = self.classes.User, self.classes.Address
         users, addresses = self.tables.users, self.tables.addresses
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -83,7 +84,7 @@ class CascadeArgTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         assert_raises_message(
             sa_exc.ArgumentError,
             "On User.addresses, can't set passive_deletes='all' "
@@ -94,7 +95,7 @@ class CascadeArgTest(fixtures.MappedTest):
     def test_delete_orphan_without_delete(self):
         Address = self.classes.Address
 
-        assert_raises_message(
+        assert_warns_message(
             sa_exc.SAWarning,
             "The 'delete-orphan' cascade option requires 'delete'.",
             relationship,
@@ -105,7 +106,7 @@ class CascadeArgTest(fixtures.MappedTest):
     def test_bad_cascade(self):
         addresses, Address = self.tables.addresses, self.classes.Address
 
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         assert_raises_message(
             sa_exc.ArgumentError,
             r"Invalid cascade option\(s\): 'fake', 'fake2'",
@@ -140,8 +141,10 @@ class CascadeArgTest(fixtures.MappedTest):
         rel.cascade = "save-update, merge, expunge"
         eq_(rel.cascade, set(["save-update", "merge", "expunge"]))
 
-        mapper(User, users, properties={"addresses": rel})
-        am = mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(
+            User, users, properties={"addresses": rel}
+        )
+        am = self.mapper_registry.map_imperatively(Address, addresses)
         configure_mappers()
 
         eq_(rel.cascade, set(["save-update", "merge", "expunge"]))
@@ -249,9 +252,9 @@ class O2MCascadeDeleteOrphanTest(fixtures.MappedTest):
             cls.tables.addresses,
         )
 
-        mapper(Address, addresses)
-        mapper(Order, orders)
-        mapper(
+        cls.mapper_registry.map_imperatively(Address, addresses)
+        cls.mapper_registry.map_imperatively(Order, orders)
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -264,7 +267,7 @@ class O2MCascadeDeleteOrphanTest(fixtures.MappedTest):
             },
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Dingaling,
             dingalings,
             properties={"address": relationship(Address)},
@@ -704,8 +707,8 @@ class O2MCascadeTest(fixtures.MappedTest):
             cls.tables.addresses,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        cls.mapper_registry.map_imperatively(Address, addresses)
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={"addresses": relationship(Address, backref="user")},
@@ -780,11 +783,14 @@ class O2MCascadeDeleteNoOrphanTest(fixtures.MappedTest):
             cls.tables.users,
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
-                orders=relationship(mapper(Order, orders), cascade="all")
+                orders=relationship(
+                    cls.mapper_registry.map_imperatively(Order, orders),
+                    cascade="all",
+                )
             ),
         )
 
@@ -848,8 +854,8 @@ class O2OSingleParentTest(_fixtures.FixtureTest):
             cls.classes.User,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        cls.mapper_registry.map_imperatively(Address, addresses)
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -916,8 +922,8 @@ class O2OSingleParentNoFlushTest(fixtures.MappedTest):
             cls.classes.User,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        cls.mapper_registry.map_imperatively(Address, addresses)
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -1120,8 +1126,12 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
             addresses_rel = {}
             user_rel = {}
 
-        mapper(User, users, properties=addresses_rel)
-        mapper(Address, addresses, properties=user_rel)
+        self.mapper_registry.map_imperatively(
+            User, users, properties=addresses_rel
+        )
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties=user_rel
+        )
 
     def _many_to_many_fixture(
         self,
@@ -1181,8 +1191,12 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
             keywords_rel = {}
             items_rel = {}
 
-        mapper(Item, items, properties=keywords_rel)
-        mapper(Keyword, keywords, properties=items_rel)
+        self.mapper_registry.map_imperatively(
+            Item, items, properties=keywords_rel
+        )
+        self.mapper_registry.map_imperatively(
+            Keyword, keywords, properties=items_rel
+        )
 
     def test_o2m_only_child_pending(self):
         User, Address = self.classes.User, self.classes.Address
@@ -1208,7 +1222,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.add(u1)
         assert u1 in sess
         assert a1 not in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_o2m_only_child_persistent(self):
         User, Address = self.classes.User, self.classes.Address
@@ -1226,7 +1240,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.add(u1)
         assert u1 in sess
         assert a1 not in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_o2m_backref_child_pending(self):
         User, Address = self.classes.User, self.classes.Address
@@ -1252,7 +1266,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.add(u1)
         assert u1 in sess
         assert a1 not in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_o2m_backref_child_transient_nochange(self):
         User, Address = self.classes.User, self.classes.Address
@@ -1288,7 +1302,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.expunge(a1)
         assert u1 in sess
         assert a1 not in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_o2m_backref_child_expunged_nochange(self):
         User, Address = self.classes.User, self.classes.Address
@@ -1337,7 +1351,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.add(a1)
         assert u1 not in sess
         assert a1 in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_m2o_only_child_expunged(self):
         User, Address = self.classes.User, self.classes.Address
@@ -1354,7 +1368,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.expunge(u1)
         assert u1 not in sess
         assert a1 in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_m2o_backref_child_pending(self):
         User, Address = self.classes.User, self.classes.Address
@@ -1380,7 +1394,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.add(a1)
         assert u1 not in sess
         assert a1 in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_m2o_backref_child_expunged(self):
         User, Address = self.classes.User, self.classes.Address
@@ -1407,7 +1421,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
             sess.expunge(u1)
             assert u1 not in sess
             assert a1 in sess
-            assert_raises_message(
+            assert_warns_message(
                 sa_exc.SAWarning, "not in session", sess.flush
             )
 
@@ -1427,7 +1441,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
             sess.expunge(u1)
             assert u1 not in sess
             assert a1 in sess
-            assert_raises_message(
+            assert_warns_message(
                 sa_exc.SAWarning, "not in session", sess.flush
             )
 
@@ -1531,7 +1545,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.add(i1)
         assert i1 in sess
         assert k1 not in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_m2m_only_child_persistent(self):
         Item, Keyword = self.classes.Item, self.classes.Keyword
@@ -1549,7 +1563,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.add(i1)
         assert i1 in sess
         assert k1 not in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_m2m_backref_child_pending(self):
         Item, Keyword = self.classes.Item, self.classes.Keyword
@@ -1575,7 +1589,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.add(i1)
         assert i1 in sess
         assert k1 not in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_m2m_backref_child_transient_nochange(self):
         Item, Keyword = self.classes.Item, self.classes.Keyword
@@ -1611,7 +1625,7 @@ class NoSaveCascadeFlushTest(_fixtures.FixtureTest):
         sess.expunge(k1)
         assert i1 in sess
         assert k1 not in sess
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.flush)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.flush)
 
     def test_m2m_backref_child_expunged_nochange(self):
         Item, Keyword = self.classes.Item, self.classes.Keyword
@@ -1649,8 +1663,8 @@ class NoSaveCascadeBackrefTest(_fixtures.FixtureTest):
             self.tables.orders,
         )
 
-        mapper(Order, orders)
-        mapper(
+        self.mapper_registry.map_imperatively(Order, orders)
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
@@ -1684,7 +1698,7 @@ class NoSaveCascadeBackrefTest(_fixtures.FixtureTest):
             self.tables.orders,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={
@@ -1693,7 +1707,7 @@ class NoSaveCascadeBackrefTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session()
 
@@ -1722,7 +1736,7 @@ class NoSaveCascadeBackrefTest(_fixtures.FixtureTest):
             self.classes.Item,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties={
@@ -1734,7 +1748,7 @@ class NoSaveCascadeBackrefTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Keyword, keywords)
+        self.mapper_registry.map_imperatively(Keyword, keywords)
 
         sess = fixture_session()
 
@@ -1832,14 +1846,14 @@ class M2OCascadeDeleteOrphanTestOne(fixtures.MappedTest):
             cls.classes.Foo,
         )
 
-        mapper(Extra, extra)
-        mapper(
+        cls.mapper_registry.map_imperatively(Extra, extra)
+        cls.mapper_registry.map_imperatively(
             Pref,
             prefs,
             properties=dict(extra=relationship(Extra, cascade="all, delete")),
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
@@ -1858,7 +1872,7 @@ class M2OCascadeDeleteOrphanTestOne(fixtures.MappedTest):
                 ),
             ),
         )  # straight m2o
-        mapper(Foo, foo)
+        cls.mapper_registry.map_imperatively(Foo, foo)
 
     @classmethod
     def insert_data(cls, connection):
@@ -1990,7 +2004,7 @@ class M2OCascadeDeleteOrphanTestOne(fixtures.MappedTest):
         assert p1 not in sess
         sess.flush()
         eq_(
-            sess.query(Pref).with_parent(someuser).all(),
+            sess.query(Pref).filter(with_parent(someuser, User.pref)).all(),
             [Pref(data="someotherpref")],
         )
 
@@ -2066,7 +2080,7 @@ class M2OCascadeDeleteOrphanTestTwo(fixtures.MappedTest):
             cls.classes.T1,
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             T1,
             t1,
             properties=dict(
@@ -2075,7 +2089,7 @@ class M2OCascadeDeleteOrphanTestTwo(fixtures.MappedTest):
                 )
             ),
         )
-        mapper(
+        cls.mapper_registry.map_imperatively(
             T2,
             t2,
             properties=dict(
@@ -2087,7 +2101,7 @@ class M2OCascadeDeleteOrphanTestTwo(fixtures.MappedTest):
                 )
             ),
         )
-        mapper(T3, t3)
+        cls.mapper_registry.map_imperatively(T3, t3)
 
     def test_cascade_delete(self):
         T2, T3, T1 = (self.classes.T2, self.classes.T3, self.classes.T1)
@@ -2226,9 +2240,13 @@ class M2OCascadeDeleteNoOrphanTest(fixtures.MappedTest):
             cls.classes.T1,
         )
 
-        mapper(T1, t1, properties={"t2": relationship(T2, cascade="all")})
-        mapper(T2, t2, properties={"t3": relationship(T3, cascade="all")})
-        mapper(T3, t3)
+        cls.mapper_registry.map_imperatively(
+            T1, t1, properties={"t2": relationship(T2, cascade="all")}
+        )
+        cls.mapper_registry.map_imperatively(
+            T2, t2, properties={"t3": relationship(T3, cascade="all")}
+        )
+        cls.mapper_registry.map_imperatively(T3, t3)
 
     def test_cascade_delete(self):
         T2, T3, T1 = (self.classes.T2, self.classes.T3, self.classes.T1)
@@ -2293,7 +2311,7 @@ class M2OCascadeDeleteNoOrphanTest(fixtures.MappedTest):
         eq_(sess.query(T2).all(), [T2()])
         eq_(sess.query(T3).all(), [T3()])
 
-    @testing.future
+    @testing.future()
     def test_preserves_orphans_onelevel_postremove(self):
         T2, T3, T1 = (self.classes.T2, self.classes.T3, self.classes.T1)
 
@@ -2387,7 +2405,7 @@ class M2MCascadeTest(fixtures.MappedTest):
         # if no backref here, delete-orphan failed until [ticket:427]
         # was fixed
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             a,
             properties={
@@ -2399,7 +2417,7 @@ class M2MCascadeTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(B, b)
+        self.mapper_registry.map_imperatively(B, b)
 
         sess = fixture_session()
         b1 = B(data="b1")
@@ -2424,7 +2442,7 @@ class M2MCascadeTest(fixtures.MappedTest):
             self.tables.atob,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             a,
             # if no backref here, delete-orphan
@@ -2439,7 +2457,7 @@ class M2MCascadeTest(fixtures.MappedTest):
             },
         )
         # failed until [ticket:427] was fixed
-        mapper(B, b)
+        self.mapper_registry.map_imperatively(B, b)
 
         sess = fixture_session()
         b1 = B(data="b1")
@@ -2466,7 +2484,7 @@ class M2MCascadeTest(fixtures.MappedTest):
             self.tables.atob,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             a,
             properties={
@@ -2480,12 +2498,12 @@ class M2MCascadeTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             B,
             b,
             properties={"cs": relationship(C, cascade="all, delete-orphan")},
         )
-        mapper(C, c)
+        self.mapper_registry.map_imperatively(C, c)
 
         sess = fixture_session()
         b1 = B(data="b1", cs=[C(data="c1")])
@@ -2511,7 +2529,7 @@ class M2MCascadeTest(fixtures.MappedTest):
             self.tables.atob,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             a,
             properties={
@@ -2523,7 +2541,7 @@ class M2MCascadeTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(B, b)
+        self.mapper_registry.map_imperatively(B, b)
 
         sess = fixture_session()
         a1 = A(data="a1", bs=[B(data="b1")])
@@ -2547,7 +2565,7 @@ class M2MCascadeTest(fixtures.MappedTest):
             self.tables.atob,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             a,
             properties={
@@ -2556,7 +2574,7 @@ class M2MCascadeTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(B, b)
+        self.mapper_registry.map_imperatively(B, b)
         assert_raises_message(
             sa_exc.ArgumentError,
             "For many-to-many relationship A.bs, delete-orphan cascade",
@@ -2572,7 +2590,7 @@ class M2MCascadeTest(fixtures.MappedTest):
             self.tables.atob,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             a,
             properties={
@@ -2584,7 +2602,7 @@ class M2MCascadeTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(B, b)
+        self.mapper_registry.map_imperatively(B, b)
 
         b1 = B(data="b1")
         A(data="a1", bs=[b1])
@@ -2603,7 +2621,7 @@ class M2MCascadeTest(fixtures.MappedTest):
             self.tables.atob,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             a,
             properties={
@@ -2616,7 +2634,7 @@ class M2MCascadeTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(B, b)
+        self.mapper_registry.map_imperatively(B, b)
 
         b1 = B(data="b1")
         a1 = A(data="a1", bs=[b1])
@@ -2637,12 +2655,12 @@ class M2MCascadeTest(fixtures.MappedTest):
             self.tables.atob,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             a,
             properties={"bs": relationship(B, secondary=atob, backref="as")},
         )
-        mapper(B, b)
+        self.mapper_registry.map_imperatively(B, b)
 
         s = fixture_session()
         a1 = A(bs=[None])
@@ -2664,12 +2682,12 @@ class M2MCascadeTest(fixtures.MappedTest):
             self.tables.atob,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             a,
             properties={"bs": relationship(B, secondary=atob, backref="as")},
         )
-        mapper(B, b)
+        self.mapper_registry.map_imperatively(B, b)
 
         s = fixture_session()
         a1 = A()
@@ -2705,7 +2723,7 @@ class O2MSelfReferentialDetelOrphanTest(fixtures.MappedTest):
     def setup_mappers(cls):
         Node = cls.classes.Node
         node = cls.tables.node
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Node,
             node,
             properties={
@@ -2747,8 +2765,8 @@ class NoBackrefCascadeTest(_fixtures.FixtureTest):
             cls.tables.users,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        cls.mapper_registry.map_imperatively(Address, addresses)
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -2758,7 +2776,7 @@ class NoBackrefCascadeTest(_fixtures.FixtureTest):
             },
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Dingaling,
             dingalings,
             properties={
@@ -2791,7 +2809,7 @@ class NoBackrefCascadeTest(_fixtures.FixtureTest):
         a1 = Address(email_address="a1")
         a1.user = u1
 
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.commit)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.commit)
 
         assert a1 not in sess
 
@@ -2854,7 +2872,7 @@ class NoBackrefCascadeTest(_fixtures.FixtureTest):
         a1.dingalings.append(d1)
         assert a1 not in sess
 
-        assert_raises_message(sa_exc.SAWarning, "not in session", sess.commit)
+        assert_warns_message(sa_exc.SAWarning, "not in session", sess.commit)
 
 
 class PendingOrphanTestSingleLevel(fixtures.MappedTest):
@@ -2929,9 +2947,9 @@ class PendingOrphanTestSingleLevel(fixtures.MappedTest):
             self.tables.addresses,
         )
 
-        mapper(Order, orders)
-        mapper(Address, addresses)
-        mapper(
+        self.mapper_registry.map_imperatively(Order, orders)
+        self.mapper_registry.map_imperatively(Address, addresses)
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
@@ -2976,8 +2994,8 @@ class PendingOrphanTestSingleLevel(fixtures.MappedTest):
             self.classes.User,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        self.mapper_registry.map_imperatively(Address, addresses)
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
@@ -3012,8 +3030,8 @@ class PendingOrphanTestSingleLevel(fixtures.MappedTest):
             self.classes.User,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        self.mapper_registry.map_imperatively(Address, addresses)
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
@@ -3087,14 +3105,14 @@ class PendingOrphanTestTwoLevel(fixtures.MappedTest):
             self.classes.Item,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             order,
             properties={
                 "items": relationship(Item, cascade="all, delete-orphan")
             },
         )
-        mapper(Item, item)
+        self.mapper_registry.map_imperatively(Item, item)
         s = fixture_session()
         o1 = Order()
         s.add(o1)
@@ -3115,14 +3133,14 @@ class PendingOrphanTestTwoLevel(fixtures.MappedTest):
             self.classes.Order,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             order,
             properties={
                 "items": relationship(Item, cascade="all, delete-orphan")
             },
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             Item,
             item,
             properties={
@@ -3131,7 +3149,7 @@ class PendingOrphanTestTwoLevel(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Attribute, attribute)
+        self.mapper_registry.map_imperatively(Attribute, attribute)
         s = fixture_session()
         o1 = Order()
         s.add(o1)
@@ -3223,8 +3241,10 @@ class DoubleParentO2MOrphanTest(fixtures.MappedTest):
         class SalesRep(fixtures.ComparableEntity):
             pass
 
-        mapper(Customer, customers, legacy_is_orphan=legacy_is_orphan)
-        mapper(
+        self.mapper_registry.map_imperatively(
+            Customer, customers, legacy_is_orphan=legacy_is_orphan
+        )
+        self.mapper_registry.map_imperatively(
             Account,
             accounts,
             properties=dict(
@@ -3236,7 +3256,7 @@ class DoubleParentO2MOrphanTest(fixtures.MappedTest):
                 )
             ),
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             SalesRep,
             sales_reps,
             properties=dict(
@@ -3393,8 +3413,8 @@ class DoubleParentM2OOrphanTest(fixtures.MappedTest):
         class Business(fixtures.ComparableEntity):
             pass
 
-        mapper(Address, addresses)
-        mapper(
+        self.mapper_registry.map_imperatively(Address, addresses)
+        self.mapper_registry.map_imperatively(
             Home,
             homes,
             properties={
@@ -3403,7 +3423,7 @@ class DoubleParentM2OOrphanTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             Business,
             businesses,
             properties={
@@ -3453,8 +3473,8 @@ class DoubleParentM2OOrphanTest(fixtures.MappedTest):
         class Business(fixtures.ComparableEntity):
             pass
 
-        mapper(Address, addresses)
-        mapper(
+        self.mapper_registry.map_imperatively(Address, addresses)
+        self.mapper_registry.map_imperatively(
             Home,
             homes,
             properties={
@@ -3463,7 +3483,7 @@ class DoubleParentM2OOrphanTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             Business,
             businesses,
             properties={
@@ -3508,12 +3528,12 @@ class CollectionAssignmentOrphanTest(fixtures.MappedTest):
         class B(fixtures.ComparableEntity):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             table_a,
             properties={"bs": relationship(B, cascade="all, delete-orphan")},
         )
-        mapper(B, table_b)
+        self.mapper_registry.map_imperatively(B, table_b)
 
         a1 = A(name="a1", bs=[B(name="b1"), B(name="b2"), B(name="b3")])
 
@@ -3591,8 +3611,10 @@ class OrphanCriterionTest(fixtures.MappedTest):
             def __init__(self, cores):
                 self.cores = cores
 
-        mapper(Core, self.tables.core, legacy_is_orphan=legacy_is_orphan)
-        mapper(
+        self.mapper_registry.map_imperatively(
+            Core, self.tables.core, legacy_is_orphan=legacy_is_orphan
+        )
+        self.mapper_registry.map_imperatively(
             RelatedOne,
             self.tables.related_one,
             properties={
@@ -3601,7 +3623,7 @@ class OrphanCriterionTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             RelatedTwo,
             self.tables.related_two,
             properties={
@@ -3789,12 +3811,12 @@ class O2MConflictTest(fixtures.MappedTest):
             self.tables.child,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Parent,
             parent,
             properties={"child": relationship(Child, uselist=False)},
         )
-        mapper(Child, child)
+        self.mapper_registry.map_imperatively(Child, child)
         self._do_move_test(True)
         self._do_move_test(False)
 
@@ -3806,12 +3828,12 @@ class O2MConflictTest(fixtures.MappedTest):
             self.tables.child,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Parent,
             parent,
             properties={"child": relationship(Child, uselist=True)},
         )
-        mapper(Child, child)
+        self.mapper_registry.map_imperatively(Child, child)
         self._do_move_test(True)
         self._do_move_test(False)
 
@@ -3823,7 +3845,7 @@ class O2MConflictTest(fixtures.MappedTest):
             self.tables.child,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Parent,
             parent,
             properties={
@@ -3834,7 +3856,7 @@ class O2MConflictTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Child, child)
+        self.mapper_registry.map_imperatively(Child, child)
         self._do_move_test(True)
         self._do_move_test(False)
 
@@ -3846,7 +3868,7 @@ class O2MConflictTest(fixtures.MappedTest):
             self.tables.child,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Parent,
             parent,
             properties={
@@ -3855,7 +3877,7 @@ class O2MConflictTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Child, child)
+        self.mapper_registry.map_imperatively(Child, child)
         self._do_move_test(True)
         self._do_move_test(False)
 
@@ -3867,7 +3889,7 @@ class O2MConflictTest(fixtures.MappedTest):
             self.tables.child,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Parent,
             parent,
             properties={
@@ -3876,7 +3898,7 @@ class O2MConflictTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Child, child)
+        self.mapper_registry.map_imperatively(Child, child)
         self._do_move_test(True)
         self._do_move_test(False)
 
@@ -3888,7 +3910,7 @@ class O2MConflictTest(fixtures.MappedTest):
             self.tables.child,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Parent,
             parent,
             properties={
@@ -3900,7 +3922,7 @@ class O2MConflictTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Child, child)
+        self.mapper_registry.map_imperatively(Child, child)
         self._do_move_test(True)
         self._do_move_test(False)
 
@@ -3912,8 +3934,8 @@ class O2MConflictTest(fixtures.MappedTest):
             self.tables.child,
         )
 
-        mapper(Parent, parent)
-        mapper(
+        self.mapper_registry.map_imperatively(Parent, parent)
+        self.mapper_registry.map_imperatively(
             Child,
             child,
             properties={
@@ -3938,8 +3960,8 @@ class O2MConflictTest(fixtures.MappedTest):
             self.tables.child,
         )
 
-        mapper(Parent, parent)
-        mapper(
+        self.mapper_registry.map_imperatively(Parent, parent)
+        self.mapper_registry.map_imperatively(
             Child,
             child,
             properties={
@@ -4004,12 +4026,12 @@ class PartialFlushTest(fixtures.MappedTest):
         class Child(fixtures.ComparableEntity):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Base,
             base,
             properties={"children": relationship(Child, backref="parent")},
         )
-        mapper(Child, noninh_child)
+        self.mapper_registry.map_imperatively(Child, noninh_child)
 
         sess = fixture_session()
 
@@ -4066,9 +4088,9 @@ class PartialFlushTest(fixtures.MappedTest):
         class Child(Base):
             pass
 
-        mapper(Base, base)
+        self.mapper_registry.map_imperatively(Base, base)
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Child,
             inh_child,
             inherits=Base,
@@ -4081,7 +4103,7 @@ class PartialFlushTest(fixtures.MappedTest):
             },
         )
 
-        mapper(Parent, parent, inherits=Base)
+        self.mapper_registry.map_imperatively(Parent, parent, inherits=Base)
 
         sess = fixture_session()
         p1 = Parent()
@@ -4274,7 +4296,7 @@ class ViewonlyFlagWarningTest(fixtures.MappedTest):
         ({"delete"}, {"delete"}),
         (
             {"all, delete-orphan"},
-            {"delete", "delete-orphan", "merge", "save-update"},
+            {"delete", "delete-orphan", "save-update"},
         ),
         ({"save-update, expunge"}, {"save-update"}),
     )
@@ -4302,8 +4324,8 @@ class ViewonlyFlagWarningTest(fixtures.MappedTest):
             self.tables.users,
         )
 
-        mapper(Order, orders)
-        mapper(
+        self.mapper_registry.map_imperatively(Order, orders)
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -4350,8 +4372,8 @@ class ViewonlyFlagWarningTest(fixtures.MappedTest):
             self.tables.users,
         )
 
-        mapper(Order, orders)
-        mapper(
+        self.mapper_registry.map_imperatively(Order, orders)
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -4381,7 +4403,10 @@ class ViewonlyFlagWarningTest(fixtures.MappedTest):
         not_in(o1, sess)
         not_in(o2, sess)
 
-    def test_default_merge_cascade(self):
+    @testing.combinations(
+        "persistent", "pending", argnames="collection_status"
+    )
+    def test_default_merge_cascade(self, collection_status):
         User, Order, orders, users = (
             self.classes.User,
             self.classes.Order,
@@ -4389,8 +4414,8 @@ class ViewonlyFlagWarningTest(fixtures.MappedTest):
             self.tables.users,
         )
 
-        mapper(Order, orders)
-        mapper(
+        self.mapper_registry.map_imperatively(Order, orders)
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -4413,12 +4438,31 @@ class ViewonlyFlagWarningTest(fixtures.MappedTest):
             Order(id=2, user_id=1, description="someotherorder"),
         )
 
-        u1.orders.append(o1)
-        u1.orders.append(o2)
+        if collection_status == "pending":
+            # technically this is pointless, one should not be appending
+            # to this collection
+            u1.orders.append(o1)
+            u1.orders.append(o2)
+        elif collection_status == "persistent":
+            sess.add(u1)
+            sess.flush()
+            sess.add_all([o1, o2])
+            sess.flush()
+            u1.orders
+        else:
+            assert False
 
         u1 = sess.merge(u1)
 
-        assert not u1.orders
+        # in 1.4, as of #4993 this was asserting that u1.orders would
+        # not be present in the new object.  However, as observed during
+        # #8862, this defeats schemes that seek to restore fully loaded
+        # objects from caches which may even have lazy="raise", but
+        # in any case would want to not emit new SQL on those collections.
+        # so we assert here that u1.orders is in fact present
+        assert "orders" in u1.__dict__
+        assert u1.__dict__["orders"]
+        assert u1.orders
 
     def test_default_cascade(self):
         User, Order, orders, users = (
@@ -4428,8 +4472,8 @@ class ViewonlyFlagWarningTest(fixtures.MappedTest):
             self.tables.users,
         )
 
-        mapper(Order, orders)
-        umapper = mapper(
+        self.mapper_registry.map_imperatively(Order, orders)
+        umapper = self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -4444,7 +4488,7 @@ class ViewonlyFlagWarningTest(fixtures.MappedTest):
             },
         )
 
-        eq_(umapper.attrs["orders"].cascade, set())
+        eq_(umapper.attrs["orders"].cascade, {"merge"})
 
     def test_write_cascade_disallowed_w_viewonly(self):
 
@@ -4452,7 +4496,7 @@ class ViewonlyFlagWarningTest(fixtures.MappedTest):
 
         assert_raises_message(
             sa_exc.ArgumentError,
-            'Cascade settings "delete, delete-orphan, merge, save-update" '
+            'Cascade settings "delete, delete-orphan, save-update" '
             "apply to persistence operations",
             relationship,
             Order,
@@ -4464,7 +4508,15 @@ class ViewonlyFlagWarningTest(fixtures.MappedTest):
         )
 
 
-class CollectionCascadesDespiteBackrefTest(fixtures.TestBase):
+class CollectionCascadesNoBackrefTest(fixtures.TestBase):
+    """test the removal of cascade_backrefs behavior
+
+
+    see test/orm/test_deprecations.py::CollectionCascadesDespiteBackrefTest
+    for the deprecated version
+
+    """
+
     @testing.fixture
     def cascade_fixture(self, registry):
         def go(collection_class):
@@ -4474,7 +4526,10 @@ class CollectionCascadesDespiteBackrefTest(fixtures.TestBase):
 
                 id = Column(Integer, primary_key=True)
                 bs = relationship(
-                    "B", backref="a", collection_class=collection_class
+                    "B",
+                    backref="a",
+                    collection_class=collection_class,
+                    cascade_backrefs=False,
                 )
 
             @registry.mapped
@@ -4515,12 +4570,8 @@ class CollectionCascadesDespiteBackrefTest(fixtures.TestBase):
         b1.a = a1
         b3.a = a1
 
-        if future:
-            assert b1 not in s
-            assert b3 not in s
-        else:
-            assert b1 in s
-            assert b3 in s
+        assert b1 not in s
+        assert b3 not in s
 
         if methname == "__setitem__":
             meth = getattr(a1.bs, methname)
@@ -4542,8 +4593,4 @@ class CollectionCascadesDespiteBackrefTest(fixtures.TestBase):
         assert b1 in s
         assert b2 in s
 
-        if future:
-            assert b3 not in s  # the event never triggers from reverse
-        else:
-            # old behavior
-            assert b3 in s
+        assert b3 not in s  # the event never triggers from reverse

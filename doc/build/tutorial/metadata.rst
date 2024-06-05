@@ -54,7 +54,7 @@ that stores a series of :class:`_schema.Table` objects keyed to their string
 name.   Constructing this object looks like::
 
     >>> from sqlalchemy import MetaData
-    >>> metadata = MetaData()
+    >>> metadata_obj = MetaData()
 
 Having a single :class:`_schema.MetaData` object for an entire application is
 the most common case, represented as a module-level variable in a single place
@@ -75,10 +75,10 @@ that will be how we will refer to the table in application code::
     >>> from sqlalchemy import Table, Column, Integer, String
     >>> user_table = Table(
     ...     "user_account",
-    ...     metadata,
-    ...     Column('id', Integer, primary_key=True),
-    ...     Column('name', String(30)),
-    ...     Column('fullname', String)
+    ...     metadata_obj,
+    ...     Column("id", Integer, primary_key=True),
+    ...     Column("name", String(30)),
+    ...     Column("fullname", String),
     ... )
 
 We can observe that the above :class:`_schema.Table` construct looks a lot like
@@ -150,10 +150,10 @@ table::
     >>> from sqlalchemy import ForeignKey
     >>> address_table = Table(
     ...     "address",
-    ...     metadata,
-    ...     Column('id', Integer, primary_key=True),
-    ...     Column('user_id', ForeignKey('user_account.id'), nullable=False),
-    ...     Column('email_address', String, nullable=False)
+    ...     metadata_obj,
+    ...     Column("id", Integer, primary_key=True),
+    ...     Column("user_id", ForeignKey("user_account.id"), nullable=False),
+    ...     Column("email_address", String, nullable=False),
     ... )
 
 The table above also features a third kind of constraint, which in SQL is the
@@ -193,7 +193,7 @@ sending it the :class:`_future.Engine` that refers to the target database:
 
 .. sourcecode:: pycon+sql
 
-    >>> metadata.create_all(engine)
+    >>> metadata_obj.create_all(engine)
     {opensql}BEGIN (implicit)
     PRAGMA main.table_...info("user_account")
     ...
@@ -297,6 +297,7 @@ known as the **declarative base**.   We get a new declarative base from the
     :func:`_orm.declarative_base` function::
 
         from sqlalchemy.orm import declarative_base
+
         Base = declarative_base()
 
     ..
@@ -313,7 +314,7 @@ for the ``user`` and ``address`` table in terms of new classes ``User`` and
 
     >>> from sqlalchemy.orm import relationship
     >>> class User(Base):
-    ...     __tablename__ = 'user_account'
+    ...     __tablename__ = "user_account"
     ...
     ...     id = Column(Integer, primary_key=True)
     ...     name = Column(String(30))
@@ -322,14 +323,14 @@ for the ``user`` and ``address`` table in terms of new classes ``User`` and
     ...     addresses = relationship("Address", back_populates="user")
     ...
     ...     def __repr__(self):
-    ...        return f"User(id={self.id!r}, name={self.name!r}, fullname={self.fullname!r})"
+    ...         return f"User(id={self.id!r}, name={self.name!r}, fullname={self.fullname!r})"
 
     >>> class Address(Base):
-    ...     __tablename__ = 'address'
+    ...     __tablename__ = "address"
     ...
     ...     id = Column(Integer, primary_key=True)
     ...     email_address = Column(String, nullable=False)
-    ...     user_id = Column(Integer, ForeignKey('user_account.id'))
+    ...     user_id = Column(Integer, ForeignKey("user_account.id"))
     ...
     ...     user = relationship("User", back_populates="addresses")
     ...
@@ -428,7 +429,6 @@ using :meth:`_schema.MetaData.create_all`::
     # declarative base
     Base.metadata.create_all(engine)
 
-
 Combining Core Table Declarations with ORM Declarative
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -443,21 +443,35 @@ This form is called  :ref:`hybrid table <orm_imperative_table_configuration>`,
 and it consists of assigning to the ``.__table__`` attribute directly, rather
 than having the declarative process generate it::
 
+    mapper_registry = registry()
+    Base = mapper_registry.generate_base()
+
+
     class User(Base):
         __table__ = user_table
 
-         addresses = relationship("Address", back_populates="user")
+        addresses = relationship("Address", back_populates="user")
 
-         def __repr__(self):
+        def __repr__(self):
             return f"User({self.name!r}, {self.fullname!r})"
+
 
     class Address(Base):
         __table__ = address_table
 
-         user = relationship("User", back_populates="addresses")
+        user = relationship("User", back_populates="addresses")
 
-         def __repr__(self):
-             return f"Address({self.email_address!r})"
+        def __repr__(self):
+            return f"Address({self.email_address!r})"
+
+.. note:: The above example is an **alternative form** to the mapping that's
+   first illustrated previously at :ref:`tutorial_declaring_mapped_classes`.
+   This example is for illustrative purposes only, and is not part of this
+   tutorial's "doctest" steps, and as such does not need to be run for readers
+   who are executing code examples. The mapping here and the one at
+   :ref:`tutorial_declaring_mapped_classes` produce equivalent mappings, but in
+   general one would use only **one** of these two forms for particular mapped
+   class.
 
 The above two classes are equivalent to those which we declared in the
 previous mapping example.
@@ -484,8 +498,19 @@ another operation that was mentioned at the beginning of the section,
 that of **table reflection**.   Table reflection refers to the process of
 generating :class:`_schema.Table` and related objects by reading the current
 state of a database.   Whereas in the previous sections we've been declaring
-:class:`_schema.Table` objects in Python and then emitting DDL to the database,
-the reflection process does it in reverse.
+:class:`_schema.Table` objects in Python, where we then have the option
+to emit DDL to the database to generate such a schema, the reflection process
+does these two steps in reverse, starting from an existing database
+and generating in-Python data structures to represent the schemas within
+that database.
+
+.. tip::  There is no requirement that reflection must be used in order to
+   use SQLAlchemy with a pre-existing database.  It is entirely typical that
+   the SQLAlchemy application declares all metadata explicitly in Python,
+   such that its structure corresponds to that the existing database.
+   The metadata structure also need not include tables, columns, or other
+   constraints and constructs in the pre-existing database that are not needed
+   for the local application to function.
 
 As an example of reflection, we will create a new :class:`_schema.Table`
 object which represents the ``some_table`` object we created manually in
@@ -499,7 +524,7 @@ using the :paramref:`_schema.Table.autoload_with` parameter:
 
 .. sourcecode:: pycon+sql
 
-    >>> some_table = Table("some_table", metadata, autoload_with=engine)
+    >>> some_table = Table("some_table", metadata_obj, autoload_with=engine)
     {opensql}BEGIN (implicit)
     PRAGMA main.table_...info("some_table")
     [raw sql] ()

@@ -3,6 +3,7 @@ from sqlalchemy import and_
 from sqlalchemy import BigInteger
 from sqlalchemy import bindparam
 from sqlalchemy import cast
+from sqlalchemy import CheckConstraint
 from sqlalchemy import Column
 from sqlalchemy import Computed
 from sqlalchemy import Date
@@ -10,6 +11,8 @@ from sqlalchemy import delete
 from sqlalchemy import Enum
 from sqlalchemy import exc
 from sqlalchemy import Float
+from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
 from sqlalchemy import Identity
 from sqlalchemy import Index
@@ -41,7 +44,7 @@ from sqlalchemy.dialects.postgresql import TSRANGE
 from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.dialects.postgresql.psycopg2 import PGDialect_psycopg2
 from sqlalchemy.orm import aliased
-from sqlalchemy.orm import mapper
+from sqlalchemy.orm import clear_mappers
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import column
 from sqlalchemy.sql import literal_column
@@ -56,6 +59,7 @@ from sqlalchemy.testing.assertions import assert_raises_message
 from sqlalchemy.testing.assertions import AssertsCompiledSQL
 from sqlalchemy.testing.assertions import expect_warnings
 from sqlalchemy.testing.assertions import is_
+from sqlalchemy.types import TypeEngine
 from sqlalchemy.util import OrderedDict
 from sqlalchemy.util import u
 
@@ -200,6 +204,35 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
             "(%(name)s) RETURNING length(mytable.name) "
             "AS length_1",
             dialect=dialect,
+        )
+
+    @testing.fixture
+    def column_expression_fixture(self):
+        class MyString(TypeEngine):
+            def column_expression(self, column):
+                return func.lower(column)
+
+        return table(
+            "some_table", column("name", String), column("value", MyString)
+        )
+
+    @testing.combinations("columns", "table", argnames="use_columns")
+    def test_plain_returning_column_expression(
+        self, column_expression_fixture, use_columns
+    ):
+        """test #8770"""
+        table1 = column_expression_fixture
+
+        if use_columns == "columns":
+            stmt = insert(table1).returning(table1)
+        else:
+            stmt = insert(table1).returning(table1.c.name, table1.c.value)
+
+        self.assert_compile(
+            stmt,
+            "INSERT INTO some_table (name, value) "
+            "VALUES (%(name)s, %(value)s) RETURNING some_table.name, "
+            "lower(some_table.value) AS value",
         )
 
     def test_create_drop_enum(self):
@@ -857,6 +890,62 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
             schema.DropIndex(idx1), "DROP INDEX test_idx1", dialect=dialect_9_1
         )
 
+    def test_create_check_constraint_not_valid(self):
+        m = MetaData()
+
+        tbl = Table(
+            "testtbl",
+            m,
+            Column("data", Integer),
+            CheckConstraint("data = 0", postgresql_not_valid=True),
+        )
+
+        self.assert_compile(
+            schema.CreateTable(tbl),
+            "CREATE TABLE testtbl (data INTEGER, CHECK (data = 0) NOT VALID)",
+        )
+
+    def test_create_foreign_key_constraint_not_valid(self):
+        m = MetaData()
+
+        tbl = Table(
+            "testtbl",
+            m,
+            Column("a", Integer),
+            Column("b", Integer),
+            ForeignKeyConstraint(
+                "b", ["testtbl.a"], postgresql_not_valid=True
+            ),
+        )
+
+        self.assert_compile(
+            schema.CreateTable(tbl),
+            "CREATE TABLE testtbl ("
+            "a INTEGER, "
+            "b INTEGER, "
+            "FOREIGN KEY(b) REFERENCES testtbl (a) NOT VALID"
+            ")",
+        )
+
+    def test_create_foreign_key_column_not_valid(self):
+        m = MetaData()
+
+        tbl = Table(
+            "testtbl",
+            m,
+            Column("a", Integer),
+            Column("b", ForeignKey("testtbl.a", postgresql_not_valid=True)),
+        )
+
+        self.assert_compile(
+            schema.CreateTable(tbl),
+            "CREATE TABLE testtbl ("
+            "a INTEGER, "
+            "b INTEGER, "
+            "FOREIGN KEY(b) REFERENCES testtbl (a) NOT VALID"
+            ")",
+        )
+
     def test_exclude_constraint_min(self):
         m = MetaData()
         tbl = Table("testtbl", m, Column("room", Integer, primary_key=True))
@@ -1464,48 +1553,48 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
         )
         self.assert_compile(
             postgresql.Any(4, c),
-            "%(param_1)s = ANY (x)",
-            checkparams={"param_1": 4},
+            "%(x_1)s = ANY (x)",
+            checkparams={"x_1": 4},
         )
 
         self.assert_compile(
             c.any(5),
-            "%(param_1)s = ANY (x)",
-            checkparams={"param_1": 5},
+            "%(x_1)s = ANY (x)",
+            checkparams={"x_1": 5},
         )
 
         self.assert_compile(
             ~c.any(5),
-            "NOT (%(param_1)s = ANY (x))",
-            checkparams={"param_1": 5},
+            "NOT (%(x_1)s = ANY (x))",
+            checkparams={"x_1": 5},
         )
 
         self.assert_compile(
             c.all(5),
-            "%(param_1)s = ALL (x)",
-            checkparams={"param_1": 5},
+            "%(x_1)s = ALL (x)",
+            checkparams={"x_1": 5},
         )
 
         self.assert_compile(
             ~c.all(5),
-            "NOT (%(param_1)s = ALL (x))",
-            checkparams={"param_1": 5},
+            "NOT (%(x_1)s = ALL (x))",
+            checkparams={"x_1": 5},
         )
 
         self.assert_compile(
             c.any(5, operator=operators.ne),
-            "%(param_1)s != ANY (x)",
-            checkparams={"param_1": 5},
+            "%(x_1)s != ANY (x)",
+            checkparams={"x_1": 5},
         )
         self.assert_compile(
             postgresql.All(6, c, operator=operators.gt),
-            "%(param_1)s > ALL (x)",
-            checkparams={"param_1": 6},
+            "%(x_1)s > ALL (x)",
+            checkparams={"x_1": 6},
         )
         self.assert_compile(
             c.all(7, operator=operators.lt),
-            "%(param_1)s < ALL (x)",
-            checkparams={"param_1": 7},
+            "%(x_1)s < ALL (x)",
+            checkparams={"x_1": 7},
         )
 
     @testing.combinations(
@@ -2223,40 +2312,102 @@ class CompileTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
 
-class InsertOnConflictTest(fixtures.TestBase, AssertsCompiledSQL):
+class InsertOnConflictTest(fixtures.TablesTest, AssertsCompiledSQL):
     __dialect__ = postgresql.dialect()
 
-    def setup_test(self):
-        self.table1 = table1 = table(
+    run_create_tables = None
+
+    @classmethod
+    def define_tables(cls, metadata):
+        cls.table1 = table1 = table(
             "mytable",
             column("myid", Integer),
             column("name", String(128)),
             column("description", String(128)),
         )
-        md = MetaData()
-        self.table_with_metadata = Table(
+        cls.table_with_metadata = Table(
             "mytable",
-            md,
+            metadata,
             Column("myid", Integer, primary_key=True),
             Column("name", String(128)),
             Column("description", String(128)),
         )
-        self.unique_constr = schema.UniqueConstraint(
+        cls.unique_constr = schema.UniqueConstraint(
             table1.c.name, name="uq_name"
         )
-        self.excl_constr = ExcludeConstraint(
+        cls.excl_constr = ExcludeConstraint(
             (table1.c.name, "="),
             (table1.c.description, "&&"),
             name="excl_thing",
         )
-        self.excl_constr_anon = ExcludeConstraint(
-            (self.table_with_metadata.c.name, "="),
-            (self.table_with_metadata.c.description, "&&"),
-            where=self.table_with_metadata.c.description != "foo",
+        cls.excl_constr_anon = ExcludeConstraint(
+            (cls.table_with_metadata.c.name, "="),
+            (cls.table_with_metadata.c.description, "&&"),
+            where=cls.table_with_metadata.c.description != "foo",
         )
-        self.goofy_index = Index(
+        cls.goofy_index = Index(
             "goofy_index", table1.c.name, postgresql_where=table1.c.name > "m"
         )
+
+        Table(
+            "users",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("name", String(50)),
+        )
+
+        Table(
+            "users_w_key",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("name", String(50), key="name_keyed"),
+        )
+
+    @testing.combinations("control", "excluded", "dict")
+    def test_set_excluded(self, scenario):
+        """test #8014, sending all of .excluded to set"""
+
+        if scenario == "control":
+            users = self.tables.users
+
+            stmt = insert(users)
+            self.assert_compile(
+                stmt.on_conflict_do_update(
+                    constraint=users.primary_key, set_=stmt.excluded
+                ),
+                "INSERT INTO users (id, name) VALUES (%(id)s, %(name)s) ON "
+                "CONFLICT (id) DO UPDATE "
+                "SET id = excluded.id, name = excluded.name",
+            )
+        else:
+            users_w_key = self.tables.users_w_key
+
+            stmt = insert(users_w_key)
+
+            if scenario == "excluded":
+                self.assert_compile(
+                    stmt.on_conflict_do_update(
+                        constraint=users_w_key.primary_key, set_=stmt.excluded
+                    ),
+                    "INSERT INTO users_w_key (id, name) "
+                    "VALUES (%(id)s, %(name_keyed)s) ON "
+                    "CONFLICT (id) DO UPDATE "
+                    "SET id = excluded.id, name = excluded.name",
+                )
+            else:
+                self.assert_compile(
+                    stmt.on_conflict_do_update(
+                        constraint=users_w_key.primary_key,
+                        set_={
+                            "id": stmt.excluded.id,
+                            "name_keyed": stmt.excluded.name_keyed,
+                        },
+                    ),
+                    "INSERT INTO users_w_key (id, name) "
+                    "VALUES (%(id)s, %(name_keyed)s) ON "
+                    "CONFLICT (id) DO UPDATE "
+                    "SET id = excluded.id, name = excluded.name",
+                )
 
     def test_on_conflict_do_no_call_twice(self):
         users = self.table1
@@ -2278,6 +2429,28 @@ class InsertOnConflictTest(fixtures.TestBase, AssertsCompiledSQL):
                     "ON CONFLICT clause established",
                 ):
                     meth()
+
+    def test_on_conflict_cte_plus_textual(self):
+        """test #7798"""
+
+        bar = table("bar", column("id"), column("attr"), column("foo_id"))
+        s1 = text("SELECT bar.id, bar.attr FROM bar").columns(
+            bar.c.id, bar.c.attr
+        )
+        s2 = (
+            insert(bar)
+            .from_select(list(s1.selected_columns), s1)
+            .on_conflict_do_update(
+                index_elements=[s1.selected_columns.id],
+                set_={"attr": s1.selected_columns.attr},
+            )
+        )
+
+        self.assert_compile(
+            s2,
+            "INSERT INTO bar (id, attr) SELECT bar.id, bar.attr "
+            "FROM bar ON CONFLICT (id) DO UPDATE SET attr = bar.attr",
+        )
 
     def test_do_nothing_no_target(self):
 
@@ -2728,7 +2901,7 @@ class InsertOnConflictTest(fixtures.TestBase, AssertsCompiledSQL):
         )
 
 
-class DistinctOnTest(fixtures.TestBase, AssertsCompiledSQL):
+class DistinctOnTest(fixtures.MappedTest, AssertsCompiledSQL):
 
     """Test 'DISTINCT' with SQL expression language and orm.Query with
     an emphasis on PG's 'DISTINCT ON' syntax.
@@ -2825,7 +2998,8 @@ class DistinctOnTest(fixtures.TestBase, AssertsCompiledSQL):
         class Foo(object):
             pass
 
-        mapper(Foo, self.table)
+        clear_mappers()
+        self.mapper_registry.map_imperatively(Foo, self.table)
         sess = Session()
         subq = sess.query(Foo).subquery()
 
@@ -2842,7 +3016,7 @@ class DistinctOnTest(fixtures.TestBase, AssertsCompiledSQL):
         class Foo(object):
             pass
 
-        mapper(Foo, self.table)
+        self.mapper_registry.map_imperatively(Foo, self.table)
         a1 = aliased(Foo)
         sess = Session()
         self.assert_compile(
@@ -3008,21 +3182,14 @@ class RegexpTest(fixtures.TestBase, testing.AssertsCompiledSQL):
     def test_regexp_match_flags(self):
         self.assert_compile(
             self.table.c.myid.regexp_match("pattern", flags="ig"),
-            "mytable.myid ~ CONCAT('(?', %(myid_1)s, ')', %(myid_2)s)",
-            checkparams={"myid_2": "pattern", "myid_1": "ig"},
+            "mytable.myid ~ CONCAT('(?', 'ig', ')', %(myid_1)s)",
+            checkparams={"myid_1": "pattern"},
         )
 
     def test_regexp_match_flags_ignorecase(self):
         self.assert_compile(
             self.table.c.myid.regexp_match("pattern", flags="i"),
             "mytable.myid ~* %(myid_1)s",
-            checkparams={"myid_1": "pattern"},
-        )
-
-    def test_regexp_match_flags_col(self):
-        self.assert_compile(
-            self.table.c.myid.regexp_match("pattern", flags=self.table.c.name),
-            "mytable.myid ~ CONCAT('(?', mytable.name, ')', %(myid_1)s)",
             checkparams={"myid_1": "pattern"},
         )
 
@@ -3050,23 +3217,14 @@ class RegexpTest(fixtures.TestBase, testing.AssertsCompiledSQL):
     def test_not_regexp_match_flags(self):
         self.assert_compile(
             ~self.table.c.myid.regexp_match("pattern", flags="ig"),
-            "mytable.myid !~ CONCAT('(?', %(myid_1)s, ')', %(myid_2)s)",
-            checkparams={"myid_2": "pattern", "myid_1": "ig"},
+            "mytable.myid !~ CONCAT('(?', 'ig', ')', %(myid_1)s)",
+            checkparams={"myid_1": "pattern"},
         )
 
     def test_not_regexp_match_flags_ignorecase(self):
         self.assert_compile(
             ~self.table.c.myid.regexp_match("pattern", flags="i"),
             "mytable.myid !~* %(myid_1)s",
-            checkparams={"myid_1": "pattern"},
-        )
-
-    def test_not_regexp_match_flags_col(self):
-        self.assert_compile(
-            ~self.table.c.myid.regexp_match(
-                "pattern", flags=self.table.c.name
-            ),
-            "mytable.myid !~ CONCAT('(?', mytable.name, ')', %(myid_1)s)",
             checkparams={"myid_1": "pattern"},
         )
 
@@ -3103,22 +3261,23 @@ class RegexpTest(fixtures.TestBase, testing.AssertsCompiledSQL):
             self.table.c.myid.regexp_replace(
                 "pattern", "replacement", flags="ig"
             ),
-            "REGEXP_REPLACE(mytable.myid, %(myid_1)s, %(myid_3)s, %(myid_2)s)",
+            "REGEXP_REPLACE(mytable.myid, %(myid_1)s, %(myid_2)s, 'ig')",
             checkparams={
                 "myid_1": "pattern",
-                "myid_3": "replacement",
-                "myid_2": "ig",
+                "myid_2": "replacement",
             },
         )
 
-    def test_regexp_replace_flags_col(self):
+    def test_regexp_replace_flags_safestring(self):
         self.assert_compile(
             self.table.c.myid.regexp_replace(
-                "pattern", "replacement", flags=self.table.c.name
+                "pattern", "replacement", flags="i'g"
             ),
-            "REGEXP_REPLACE(mytable.myid, %(myid_1)s,"
-            " %(myid_2)s, mytable.name)",
-            checkparams={"myid_1": "pattern", "myid_2": "replacement"},
+            "REGEXP_REPLACE(mytable.myid, %(myid_1)s, %(myid_2)s, 'i''g')",
+            checkparams={
+                "myid_1": "pattern",
+                "myid_2": "replacement",
+            },
         )
 
     @testing.combinations(
@@ -3202,4 +3361,37 @@ class RegexpTest(fixtures.TestBase, testing.AssertsCompiledSQL):
             select(1).fetch(fetch, **fetch_kw).offset(offset),
             "SELECT 1 " + exp,
             checkparams=params,
+        )
+
+
+class CacheKeyTest(fixtures.CacheKeyFixture, fixtures.TestBase):
+    def test_aggregate_order_by(self):
+        """test #8574"""
+
+        self._run_cache_key_fixture(
+            lambda: (
+                aggregate_order_by(column("a"), column("a")),
+                aggregate_order_by(column("a"), column("b")),
+                aggregate_order_by(column("a"), column("a").desc()),
+                aggregate_order_by(column("a"), column("a").nulls_first()),
+                aggregate_order_by(
+                    column("a"), column("a").desc().nulls_first()
+                ),
+                aggregate_order_by(column("a", Integer), column("b")),
+                aggregate_order_by(column("a"), column("b"), column("c")),
+                aggregate_order_by(column("a"), column("c"), column("b")),
+                aggregate_order_by(
+                    column("a"), column("b").desc(), column("c")
+                ),
+                aggregate_order_by(
+                    column("a"), column("b").nulls_first(), column("c")
+                ),
+                aggregate_order_by(
+                    column("a"), column("b").desc().nulls_first(), column("c")
+                ),
+                aggregate_order_by(
+                    column("a", Integer), column("a"), column("b")
+                ),
+            ),
+            compare_values=False,
         )

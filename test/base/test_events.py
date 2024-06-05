@@ -7,6 +7,7 @@ from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import expect_deprecated
+from sqlalchemy.testing import expect_raises_message
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
 from sqlalchemy.testing import is_not
@@ -196,6 +197,50 @@ class EventsTest(TearDownLocalEventsFixture, fixtures.TestBase):
         t2.dispatch.event_one.for_modify(t2.dispatch).exec_once(9, 10)
 
         eq_(m1.mock_calls, [call(5, 6), call(9, 10)])
+
+    def test_real_name_wrong_dispatch(self):
+        m1 = Mock()
+
+        class E1(event.Events):
+            @classmethod
+            def _accept_with(cls, target):
+                if isinstance(target, T1):
+                    return target
+                else:
+                    m1.yup()
+                    return None
+
+            def event_one(self, x, y):
+                pass
+
+            def event_two(self, x):
+                pass
+
+            def event_three(self, x):
+                pass
+
+        class T1(object):
+            dispatch = event.dispatcher(E1)
+
+        class T2(object):
+            pass
+
+        class E2(event.Events):
+
+            _dispatch_target = T2
+
+            def event_four(self, x):
+                pass
+
+        with expect_raises_message(
+            exc.InvalidRequestError, "No such event 'event_three'"
+        ):
+
+            @event.listens_for(E2, "event_three")
+            def go(*arg):
+                pass
+
+        eq_(m1.mock_calls, [call.yup()])
 
     def test_exec_once_exception(self):
         m1 = Mock()
@@ -631,6 +676,35 @@ class ClsLevelListenTest(TearDownLocalEventsFixture, fixtures.TestBase):
             pass
 
         eq_(len(SubTarget().dispatch.event_one), 2)
+
+    @testing.combinations(True, False, argnames="m1")
+    @testing.combinations(True, False, argnames="m2")
+    @testing.combinations(True, False, argnames="m3")
+    @testing.combinations(True, False, argnames="use_insert")
+    def test_subclass_gen_after_clslisten(self, m1, m2, m3, use_insert):
+        """test #8467"""
+        m1 = Mock() if m1 else None
+        m2 = Mock() if m2 else None
+        m3 = Mock() if m3 else None
+
+        if m1:
+            event.listen(self.TargetOne, "event_one", m1, insert=use_insert)
+
+        class SubTarget(self.TargetOne):
+            pass
+
+        if m2:
+            event.listen(SubTarget, "event_one", m2, insert=use_insert)
+
+        if m3:
+            event.listen(self.TargetOne, "event_one", m3, insert=use_insert)
+
+        st = SubTarget()
+        st.dispatch.event_one()
+
+        for m in m1, m2, m3:
+            if m:
+                eq_(m.mock_calls, [call()])
 
     def test_lis_multisub_lis(self):
         @event.listens_for(self.TargetOne, "event_one")

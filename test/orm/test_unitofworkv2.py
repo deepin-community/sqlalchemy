@@ -16,16 +16,16 @@ from sqlalchemy import String
 from sqlalchemy import testing
 from sqlalchemy import text
 from sqlalchemy import util
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import attributes
 from sqlalchemy.orm import backref
 from sqlalchemy.orm import clear_mappers
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import exc as orm_exc
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import unitofwork
 from sqlalchemy.testing import assert_raises_message
+from sqlalchemy.testing import assert_warns_message
 from sqlalchemy.testing import config
 from sqlalchemy.testing import engines
 from sqlalchemy.testing import eq_
@@ -76,8 +76,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users, properties={"addresses": relationship(Address)})
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(
+            User, users, properties={"addresses": relationship(Address)}
+        )
+        self.mapper_registry.map_imperatively(Address, addresses)
         sess = fixture_session()
 
         a1, a2 = Address(email_address="a1"), Address(email_address="a2")
@@ -125,8 +127,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users, properties={"addresses": relationship(Address)})
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(
+            User, users, properties={"addresses": relationship(Address)}
+        )
+        self.mapper_registry.map_imperatively(Address, addresses)
         sess = fixture_session()
         a1, a2 = Address(email_address="a1"), Address(email_address="a2")
         u1 = User(name="u1", addresses=[a1, a2])
@@ -156,8 +160,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users, properties={"addresses": relationship(Address)})
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(
+            User, users, properties={"addresses": relationship(Address)}
+        )
+        self.mapper_registry.map_imperatively(Address, addresses)
         sess = fixture_session()
         a1, a2 = Address(email_address="a1"), Address(email_address="a2")
         u1 = User(name="u1", addresses=[a1, a2])
@@ -189,8 +195,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"user": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"user": relationship(User)}
+        )
         sess = fixture_session()
 
         u1 = User(name="u1")
@@ -241,8 +249,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"user": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"user": relationship(User)}
+        )
         sess = fixture_session()
 
         u1 = User(name="u1")
@@ -276,8 +286,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"user": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"user": relationship(User)}
+        )
         sess = fixture_session()
 
         u1 = User(name="u1")
@@ -314,8 +326,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"parent": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"parent": relationship(User)}
+        )
 
         parent = User(name="p1")
         c1, c2 = (
@@ -395,8 +409,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"parent": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"parent": relationship(User)}
+        )
 
         parent = User(name="p1")
         c1, c2 = (
@@ -460,8 +476,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"parent": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"parent": relationship(User)}
+        )
 
         parent = User(name="p1")
         c1, c2 = (
@@ -524,8 +542,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"user": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"user": relationship(User)}
+        )
         sess = fixture_session()
 
         u1 = User(name="u1")
@@ -555,8 +575,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"user": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"user": relationship(User)}
+        )
         sess = fixture_session()
 
         u1 = User(name="u1")
@@ -595,8 +617,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"parent": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"parent": relationship(User)}
+        )
 
         sess = fixture_session()
 
@@ -635,7 +659,9 @@ class RudimentaryFlushTest(UOWTest):
 
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(Node, nodes, properties={"children": relationship(Node)})
+        self.mapper_registry.map_imperatively(
+            Node, nodes, properties={"children": relationship(Node)}
+        )
 
         sess = fixture_session()
 
@@ -670,14 +696,14 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.Item,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties={
                 "keywords": relationship(Keyword, secondary=item_keywords)
             },
         )
-        mapper(Keyword, keywords)
+        self.mapper_registry.map_imperatively(Keyword, keywords)
 
         sess = fixture_session()
         k1 = Keyword(name="k1")
@@ -722,8 +748,8 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={"user": relationship(User, passive_updates=True)},
@@ -741,8 +767,10 @@ class RudimentaryFlushTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(User, users, properties={"addresses": relationship(Address)})
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(
+            User, users, properties={"addresses": relationship(Address)}
+        )
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         with fixture_session(autoflush=False) as sess:
             u1 = User(name="ed")
@@ -837,7 +865,9 @@ class SingleCycleTest(UOWTest):
     def test_one_to_many_save(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(Node, nodes, properties={"children": relationship(Node)})
+        self.mapper_registry.map_imperatively(
+            Node, nodes, properties={"children": relationship(Node)}
+        )
         sess = fixture_session()
 
         n2, n3 = Node(data="n2"), Node(data="n3")
@@ -885,7 +915,9 @@ class SingleCycleTest(UOWTest):
     def test_one_to_many_delete_all(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(Node, nodes, properties={"children": relationship(Node)})
+        self.mapper_registry.map_imperatively(
+            Node, nodes, properties={"children": relationship(Node)}
+        )
         sess = fixture_session()
 
         n2, n3 = Node(data="n2", children=[]), Node(data="n3", children=[])
@@ -913,7 +945,9 @@ class SingleCycleTest(UOWTest):
     def test_one_to_many_delete_parent(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(Node, nodes, properties={"children": relationship(Node)})
+        self.mapper_registry.map_imperatively(
+            Node, nodes, properties={"children": relationship(Node)}
+        )
         sess = fixture_session()
 
         n2, n3 = Node(data="n2", children=[]), Node(data="n3", children=[])
@@ -943,7 +977,7 @@ class SingleCycleTest(UOWTest):
     def test_many_to_one_save(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={"parent": relationship(Node, remote_side=nodes.c.id)},
@@ -995,7 +1029,7 @@ class SingleCycleTest(UOWTest):
     def test_many_to_one_delete_all(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={"parent": relationship(Node, remote_side=nodes.c.id)},
@@ -1027,7 +1061,7 @@ class SingleCycleTest(UOWTest):
     def test_many_to_one_set_null_unloaded(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={"parent": relationship(Node, remote_side=nodes.c.id)},
@@ -1054,7 +1088,9 @@ class SingleCycleTest(UOWTest):
     def test_cycle_rowswitch(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(Node, nodes, properties={"children": relationship(Node)})
+        self.mapper_registry.map_imperatively(
+            Node, nodes, properties={"children": relationship(Node)}
+        )
         sess = fixture_session()
 
         n2, n3 = Node(data="n2", children=[]), Node(data="n3", children=[])
@@ -1070,7 +1106,7 @@ class SingleCycleTest(UOWTest):
     def test_bidirectional_mutations_one(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={
@@ -1096,7 +1132,7 @@ class SingleCycleTest(UOWTest):
     def test_bidirectional_multilevel_save(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={
@@ -1190,7 +1226,9 @@ class SingleCycleTest(UOWTest):
     def test_singlecycle_flush_size(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(Node, nodes, properties={"children": relationship(Node)})
+        self.mapper_registry.map_imperatively(
+            Node, nodes, properties={"children": relationship(Node)}
+        )
         with fixture_session() as sess:
             n1 = Node(data="ed")
             sess.add(n1)
@@ -1224,7 +1262,7 @@ class SingleCycleTest(UOWTest):
     def test_delete_unloaded_m2o(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={"parent": relationship(Node, remote_side=nodes.c.id)},
@@ -1329,7 +1367,7 @@ class SingleCyclePlusAttributeTest(
         class FooBar(fixtures.ComparableEntity):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={
@@ -1337,7 +1375,7 @@ class SingleCyclePlusAttributeTest(
                 "foobars": relationship(FooBar),
             },
         )
-        mapper(FooBar, foobars)
+        self.mapper_registry.map_imperatively(FooBar, foobars)
 
         sess = fixture_session()
         n1 = Node(data="n1")
@@ -1394,7 +1432,7 @@ class SingleCycleM2MTest(
         class Node(fixtures.ComparableEntity):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={
@@ -1541,7 +1579,7 @@ class RowswitchAccountingTest(fixtures.MappedTest):
         class Child(fixtures.BasicEntity):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Parent,
             parent,
             properties={
@@ -1553,7 +1591,7 @@ class RowswitchAccountingTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Child, child)
+        self.mapper_registry.map_imperatively(Child, child)
         return Parent, Child
 
     def test_switch_on_update(self):
@@ -1638,13 +1676,15 @@ class RowswitchM2OTest(fixtures.MappedTest):
         class C(fixtures.BasicEntity):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             A,
             a,
             properties={"bs": relationship(B, cascade="all, delete-orphan")},
         )
-        mapper(B, b, properties={"c": relationship(C)})
-        mapper(C, c)
+        self.mapper_registry.map_imperatively(
+            B, b, properties={"c": relationship(C)}
+        )
+        self.mapper_registry.map_imperatively(C, c)
         return A, B, C
 
     def test_set_none_replaces_m2o(self):
@@ -1742,7 +1782,7 @@ class BasicStaleChecksTest(fixtures.MappedTest):
         class Child(fixtures.BasicEntity):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Parent,
             parent,
             properties={
@@ -1755,7 +1795,7 @@ class BasicStaleChecksTest(fixtures.MappedTest):
             },
             confirm_deleted_rows=confirm_deleted_rows,
         )
-        mapper(Child, child)
+        self.mapper_registry.map_imperatively(Child, child)
         return Parent, Child
 
     @testing.requires.sane_rowcount
@@ -1880,7 +1920,7 @@ class BasicStaleChecksTest(fixtures.MappedTest):
 
         sess.delete(p1)
 
-        assert_raises_message(
+        assert_warns_message(
             exc.SAWarning,
             r"DELETE statement on table 'parent' expected to "
             r"delete 1 row\(s\); 0 were matched.",
@@ -1900,7 +1940,7 @@ class BasicStaleChecksTest(fixtures.MappedTest):
         sess.delete(p1)
         sess.delete(p2)
 
-        assert_raises_message(
+        assert_warns_message(
             exc.SAWarning,
             r"DELETE statement on table 'parent' expected to "
             r"delete 2 row\(s\); 0 were matched.",
@@ -1965,7 +2005,7 @@ class BasicStaleChecksTest(fixtures.MappedTest):
         with patch.object(
             config.db.dialect, "supports_sane_multi_rowcount", False
         ):
-            assert_raises_message(
+            assert_warns_message(
                 exc.SAWarning,
                 r"DELETE statement on table 'parent' expected to "
                 r"delete 1 row\(s\); 0 were matched.",
@@ -2033,7 +2073,7 @@ class BatchInsertsTest(fixtures.MappedTest, testing.AssertsExecutionResults):
         class T(fixtures.ComparableEntity):
             pass
 
-        mapper(T, t)
+        self.mapper_registry.map_imperatively(T, t)
         sess = fixture_session()
         sess.add_all(
             [
@@ -2120,7 +2160,7 @@ class LoadersUsingCommittedTest(UOWTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -2132,7 +2172,7 @@ class LoadersUsingCommittedTest(UOWTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         return fixture_session(expire_on_commit=False)
 
     def test_before_update_m2o(self):
@@ -2162,7 +2202,7 @@ class LoadersUsingCommittedTest(UOWTest):
 
         sess.expunge_all()
         # lookup an address and move it to the other user
-        a1 = sess.query(Address).get(a1.id)
+        a1 = sess.get(Address, a1.id)
 
         # move address to another user's fk
         assert a1.user_id == u1.id
@@ -2231,7 +2271,7 @@ class LoadersUsingCommittedTest(UOWTest):
         sess.commit()
 
         sess.expunge_all()
-        u1 = sess.query(User).get(u1.id)
+        u1 = sess.get(User, u1.id)
         u1.id = 2
         try:
             sess.flush()
@@ -2271,7 +2311,9 @@ class NoAttrEventInFlushTest(fixtures.MappedTest):
     def setup_mappers(cls):
         Thing = cls.classes.Thing
 
-        mapper(Thing, cls.tables.test, eager_defaults=True)
+        cls.mapper_registry.map_imperatively(
+            Thing, cls.tables.test, eager_defaults=True
+        )
 
     def test_no_attr_events_flush(self):
         Thing = self.classes.Thing
@@ -2322,11 +2364,15 @@ class EagerDefaultsTest(fixtures.MappedTest):
     def setup_mappers(cls):
         Thing = cls.classes.Thing
 
-        mapper(Thing, cls.tables.test, eager_defaults=True)
+        cls.mapper_registry.map_imperatively(
+            Thing, cls.tables.test, eager_defaults=True
+        )
 
         Thing2 = cls.classes.Thing2
 
-        mapper(Thing2, cls.tables.test2, eager_defaults=True)
+        cls.mapper_registry.map_imperatively(
+            Thing2, cls.tables.test2, eager_defaults=True
+        )
 
     def test_insert_defaults_present(self):
         Thing = self.classes.Thing
@@ -2834,7 +2880,7 @@ class TypeWoBoolTest(fixtures.MappedTest, testing.AssertsExecutionResults):
     def setup_mappers(cls):
         Thing = cls.classes.Thing
 
-        mapper(Thing, cls.tables.test)
+        cls.mapper_registry.map_imperatively(Thing, cls.tables.test)
 
     def test_update_against_none(self):
         Thing = self.classes.Thing
@@ -2972,12 +3018,16 @@ class NullEvaluatingTest(fixtures.MappedTest, testing.AssertsExecutionResults):
         Thing = cls.classes.Thing
         AltNameThing = cls.classes.AltNameThing
 
-        mapper(Thing, cls.tables.test)
+        cls.mapper_registry.map_imperatively(Thing, cls.tables.test)
 
-        mapper(AltNameThing, cls.tables.test_w_renames, column_prefix="_foo_")
+        cls.mapper_registry.map_imperatively(
+            AltNameThing, cls.tables.test_w_renames, column_prefix="_foo_"
+        )
 
         if testing.requires.json_type.enabled:
-            mapper(cls.classes.JSONThing, cls.tables.test_has_json)
+            cls.mapper_registry.map_imperatively(
+                cls.classes.JSONThing, cls.tables.test_has_json
+            )
 
     def _assert_col(self, name, value):
         Thing, AltNameThing = self.classes.Thing, self.classes.AltNameThing
@@ -3129,7 +3179,7 @@ class EnsureCacheTest(fixtures.FutureEngineMixin, UOWTest):
     def test_ensure_cache(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         cache = {}
         eq_(len(inspect(User)._compiled_cache), 0)

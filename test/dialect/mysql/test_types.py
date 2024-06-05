@@ -474,6 +474,8 @@ class TypeRoundTripTest(fixtures.TestBase, AssertsExecutionResults):
 
     # fixed in mysql-connector as of 2.0.1,
     # see https://bugs.mysql.com/bug.php?id=73266
+
+    @testing.requires.literal_float_coercion
     def test_precision_float_roundtrip(self, metadata, connection):
         t = Table(
             "t",
@@ -513,8 +515,8 @@ class TypeRoundTripTest(fixtures.TestBase, AssertsExecutionResults):
         )
         t.create(connection)
         t2 = Table("foo", MetaData(), autoload_with=connection)
-        eq_(t2.kwargs["mysql_collate"], "utf8_bin")
-        eq_(t2.kwargs["mysql_default charset"], "utf8")
+        assert t2.kwargs["mysql_collate"] in ("utf8_bin", "utf8mb3_bin")
+        assert t2.kwargs["mysql_default charset"] in ("utf8", "utf8mb3")
 
         # test [ticket:2906]
         # in order to test the condition here, need to use
@@ -549,7 +551,7 @@ class TypeRoundTripTest(fixtures.TestBase, AssertsExecutionResults):
         ([0, 0, 0, 0, i, i, i, i], None),
         ([0, 0, 0, 0, 0, j, j, j], None),
         ([0, 0, 0, 0, 0, 0, k, k], None),
-        ([0, 0, 0, 0, 0, 0, 0, l], None),
+        ([0, 0, 0, 0, 0, 0, 0, l], None, testing.fails_if("+asyncmy")),
         argnames="store, expected",
     )
     def test_bit_50_roundtrip(self, connection, bit_table, store, expected):
@@ -569,7 +571,7 @@ class TypeRoundTripTest(fixtures.TestBase, AssertsExecutionResults):
         ([0, 0, 0, 0, i, i, i, i], None),
         ([0, 0, 0, 0, 0, j, j, j], None),
         ([0, 0, 0, 0, 0, 0, k, k], None),
-        ([0, 0, 0, 0, 0, 0, 0, l], None),
+        ([0, 0, 0, 0, 0, 0, 0, l], None, testing.fails_if("+asyncmy")),
         argnames="store, expected",
     )
     def test_bit_50_roundtrip_reflected(
@@ -1311,6 +1313,24 @@ class EnumSetTest(
             ).fetchall(),
             [("", ""), ("", ""), ("two", "two"), (None, None)],
         )
+
+    @testing.combinations(
+        (
+            [""],
+            {"retrieve_as_bitwise": True},
+            "SET('', retrieve_as_bitwise=True)",
+        ),
+        (["a"], {}, "SET('a')"),
+        (["a", "b", "c"], {}, "SET('a', 'b', 'c')"),
+        (
+            ["a", "b", "c"],
+            {"collation": "utf8_bin"},
+            "SET('a', 'b', 'c', collation='utf8_bin')",
+        ),
+        argnames="value,kw,expected",
+    )
+    def test_set_repr(self, value, kw, expected):
+        eq_(repr(mysql.SET(*value, **kw)), expected)
 
 
 def colspec(c):

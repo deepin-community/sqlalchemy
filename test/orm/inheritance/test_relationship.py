@@ -4,14 +4,13 @@ from sqlalchemy import Integer
 from sqlalchemy import select
 from sqlalchemy import String
 from sqlalchemy import testing
+from sqlalchemy import util
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import backref
 from sqlalchemy.orm import configure_mappers
 from sqlalchemy.orm import contains_eager
 from sqlalchemy.orm import joinedload
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
-from sqlalchemy.orm import selectinload
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import subqueryload
@@ -55,6 +54,13 @@ class Paperwork(fixtures.ComparableEntity):
     pass
 
 
+def _aliased_join_warning(arg):
+    return testing.expect_warnings(
+        "An alias is being generated automatically against joined entity "
+        "mapped class %s due to overlapping tables" % (arg,)
+    )
+
+
 class SelfReferentialTestJoinedToBase(fixtures.MappedTest):
 
     run_setup_mappers = "once"
@@ -91,14 +97,14 @@ class SelfReferentialTestJoinedToBase(fixtures.MappedTest):
     def setup_mappers(cls):
         engineers, people = cls.tables.engineers, cls.tables.people
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Person,
             people,
             polymorphic_on=people.c.type,
             polymorphic_identity="person",
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Engineer,
             engineers,
             inherits=Person,
@@ -157,7 +163,7 @@ class SelfReferentialTestJoinedToBase(fixtures.MappedTest):
         pa = aliased(Person)
         eq_(
             sess.query(Engineer)
-            .join(pa, "reports_to")
+            .join(pa, Engineer.reports_to)
             .filter(pa.name == "dogbert")
             .first(),
             Engineer(name="dilbert"),
@@ -213,18 +219,18 @@ class SelfReferentialJ2JTest(fixtures.MappedTest):
         managers = cls.tables.managers
         people = cls.tables.people
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Person,
             people,
             polymorphic_on=people.c.type,
             polymorphic_identity="person",
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Manager, managers, inherits=Person, polymorphic_identity="manager"
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Engineer,
             engineers,
             inherits=Person,
@@ -269,13 +275,14 @@ class SelfReferentialJ2JTest(fixtures.MappedTest):
 
         eq_(
             sess.query(Engineer)
-            .join(ma, "reports_to")
+            .join(ma, Engineer.reports_to)
             .filter(ma.name == "dogbert")
             .first(),
             Engineer(name="dilbert"),
         )
 
-    def test_filter_aliasing(self):
+    @testing.combinations((True,), (False,), argnames="autoalias")
+    def test_filter_aliasing(self, autoalias):
         m1 = Manager(name="dogbert")
         m2 = Manager(name="foo")
         e1 = Engineer(name="wally", primary_language="java", reports_to=m1)
@@ -287,32 +294,62 @@ class SelfReferentialJ2JTest(fixtures.MappedTest):
         sess.flush()
         sess.expunge_all()
 
-        # filter aliasing applied to Engineer doesn't whack Manager
-        eq_(
-            sess.query(Manager)
-            .join(Manager.engineers)
-            .filter(Manager.name == "dogbert")
-            .all(),
-            [m1],
-        )
+        if autoalias:
+            # filter aliasing applied to Engineer doesn't whack Manager
+            with _aliased_join_warning("Engineer->engineers"):
+                eq_(
+                    sess.query(Manager)
+                    .join(Manager.engineers)
+                    .filter(Manager.name == "dogbert")
+                    .all(),
+                    [m1],
+                )
 
-        eq_(
-            sess.query(Manager)
-            .join(Manager.engineers)
-            .filter(Engineer.name == "dilbert")
-            .all(),
-            [m2],
-        )
+            with _aliased_join_warning("Engineer->engineers"):
+                eq_(
+                    sess.query(Manager)
+                    .join(Manager.engineers)
+                    .filter(Engineer.name == "dilbert")
+                    .all(),
+                    [m2],
+                )
 
-        eq_(
-            sess.query(Manager, Engineer)
-            .join(Manager.engineers)
-            .order_by(Manager.name.desc())
-            .all(),
-            [(m2, e2), (m1, e1)],
-        )
+            with _aliased_join_warning("Engineer->engineers"):
+                eq_(
+                    sess.query(Manager, Engineer)
+                    .join(Manager.engineers)
+                    .order_by(Manager.name.desc())
+                    .all(),
+                    [(m2, e2), (m1, e1)],
+                )
+        else:
+            eng = aliased(Engineer, flat=True)
+            eq_(
+                sess.query(Manager)
+                .join(Manager.engineers.of_type(eng))
+                .filter(Manager.name == "dogbert")
+                .all(),
+                [m1],
+            )
 
-    def test_relationship_compare(self):
+            eq_(
+                sess.query(Manager)
+                .join(Manager.engineers.of_type(eng))
+                .filter(eng.name == "dilbert")
+                .all(),
+                [m2],
+            )
+
+            eq_(
+                sess.query(Manager, eng)
+                .join(Manager.engineers.of_type(eng))
+                .order_by(Manager.name.desc())
+                .all(),
+                [(m2, e2), (m1, e1)],
+            )
+
+    @testing.combinations((True,), (False,), argnames="autoalias")
+    def test_relationship_compare(self, autoalias):
         m1 = Manager(name="dogbert")
         m2 = Manager(name="foo")
         e1 = Engineer(name="dilbert", primary_language="java", reports_to=m1)
@@ -328,21 +365,41 @@ class SelfReferentialJ2JTest(fixtures.MappedTest):
         sess.flush()
         sess.expunge_all()
 
-        eq_(
-            sess.query(Manager)
-            .join(Manager.engineers)
-            .filter(Engineer.reports_to == None)
-            .all(),  # noqa
-            [],
-        )
+        if autoalias:
+            with _aliased_join_warning("Engineer->engineers"):
+                eq_(
+                    sess.query(Manager)
+                    .join(Manager.engineers)
+                    .filter(Engineer.reports_to == None)
+                    .all(),
+                    [],
+                )
 
-        eq_(
-            sess.query(Manager)
-            .join(Manager.engineers)
-            .filter(Engineer.reports_to == m1)
-            .all(),
-            [m1],
-        )
+            with _aliased_join_warning("Engineer->engineers"):
+                eq_(
+                    sess.query(Manager)
+                    .join(Manager.engineers)
+                    .filter(Engineer.reports_to == m1)
+                    .all(),
+                    [m1],
+                )
+        else:
+            eng = aliased(Engineer, flat=True)
+            eq_(
+                sess.query(Manager)
+                .join(Manager.engineers.of_type(eng))
+                .filter(eng.reports_to == None)
+                .all(),
+                [],
+            )
+
+            eq_(
+                sess.query(Manager)
+                .join(Manager.engineers.of_type(eng))
+                .filter(eng.reports_to == m1)
+                .all(),
+                [m1],
+            )
 
 
 class SelfReferentialJ2JSelfTest(fixtures.MappedTest):
@@ -383,14 +440,14 @@ class SelfReferentialJ2JSelfTest(fixtures.MappedTest):
         engineers = cls.tables.engineers
         people = cls.tables.people
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Person,
             people,
             polymorphic_on=people.c.type,
             polymorphic_identity="person",
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Engineer,
             engineers,
             inherits=Person,
@@ -449,7 +506,7 @@ class SelfReferentialJ2JSelfTest(fixtures.MappedTest):
         ea = aliased(Engineer)
         eq_(
             sess.query(Engineer)
-            .join(ea, "reports_to")
+            .join(ea, Engineer.reports_to)
             .filter(ea.name == "wally")
             .first(),
             Engineer(name="dilbert"),
@@ -556,7 +613,7 @@ class M2MFilterTest(fixtures.MappedTest):
         class Organization(cls.Comparable):
             pass
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Organization,
             organizations,
             properties={
@@ -568,14 +625,14 @@ class M2MFilterTest(fixtures.MappedTest):
             },
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Person,
             people,
             polymorphic_on=people.c.type,
             polymorphic_identity="person",
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Engineer,
             engineers,
             inherits=Person,
@@ -696,9 +753,11 @@ class SelfReferentialM2MTest(fixtures.MappedTest, AssertsCompiledSQL):
         Child2 = cls.classes.Child2
         secondary = cls.tables.secondary
 
-        mapper(Parent, parent, polymorphic_on=parent.c.cls)
+        cls.mapper_registry.map_imperatively(
+            Parent, parent, polymorphic_on=parent.c.cls
+        )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Child1,
             child1,
             inherits=Parent,
@@ -715,7 +774,9 @@ class SelfReferentialM2MTest(fixtures.MappedTest, AssertsCompiledSQL):
             },
         )
 
-        mapper(Child2, child2, inherits=Parent, polymorphic_identity="child2")
+        cls.mapper_registry.map_imperatively(
+            Child2, child2, inherits=Parent, polymorphic_identity="child2"
+        )
 
     def test_query_crit(self):
         Child1, Child2 = self.classes.Child1, self.classes.Child2
@@ -728,16 +789,35 @@ class SelfReferentialM2MTest(fixtures.MappedTest, AssertsCompiledSQL):
         sess.add_all([c11, c12, c13, c21, c22, c23])
         sess.flush()
 
+        # auto alias test:
         # test that the join to Child2 doesn't alias Child1 in the select
 
         stmt = select(Child1).join(Child1.left_child2)
+
+        with _aliased_join_warning("Child2->child2"):
+            eq_(
+                set(sess.execute(stmt).scalars().unique()),
+                set([c11, c12, c13]),
+            )
+
+        with _aliased_join_warning("Child2->child2"):
+            eq_(
+                set(sess.query(Child1, Child2).join(Child1.left_child2)),
+                set([(c11, c22), (c12, c22), (c13, c23)]),
+            )
+
+        # manual alias test:
+
+        c2 = aliased(Child2)
+        stmt = select(Child1).join(Child1.left_child2.of_type(c2))
+
         eq_(
             set(sess.execute(stmt).scalars().unique()),
             set([c11, c12, c13]),
         )
 
         eq_(
-            set(sess.query(Child1, Child2).join(Child1.left_child2)),
+            set(sess.query(Child1, c2).join(Child1.left_child2.of_type(c2))),
             set([(c11, c22), (c12, c22), (c13, c23)]),
         )
 
@@ -748,16 +828,48 @@ class SelfReferentialM2MTest(fixtures.MappedTest, AssertsCompiledSQL):
             .join(Child2.right_children)
             .where(Child1.left_child2 == c22)
         )
+        with _aliased_join_warning("Child1->child1"):
+            eq_(
+                set(sess.execute(stmt).scalars().unique()),
+                set([c22]),
+            )
+
+        # manual aliased version
+        c1 = aliased(Child1, flat=True)
+        stmt = (
+            select(Child2)
+            .join(Child2.right_children.of_type(c1))
+            .where(c1.left_child2 == c22)
+        )
         eq_(
             set(sess.execute(stmt).scalars().unique()),
             set([c22]),
         )
 
         # test the same again
+        with _aliased_join_warning("Child1->child1"):
+            self.assert_compile(
+                sess.query(Child2)
+                .join(Child2.right_children)
+                .filter(Child1.left_child2 == c22)
+                .statement,
+                "SELECT child2.id, parent.id AS id_1, parent.cls "
+                "FROM secondary AS secondary_1, parent "
+                "JOIN child2 ON parent.id = child2.id "
+                "JOIN secondary AS secondary_2 ON parent.id = "
+                "secondary_2.left_id "
+                "JOIN (parent AS parent_1 JOIN child1 AS child1_1 "
+                "ON parent_1.id = child1_1.id) ON parent_1.id = "
+                "secondary_2.right_id "
+                "WHERE parent_1.id = secondary_1.right_id "
+                "AND :param_1 = secondary_1.left_id",
+            )
+
+        # non aliased version
         self.assert_compile(
             sess.query(Child2)
-            .join(Child2.right_children)
-            .filter(Child1.left_child2 == c22)
+            .join(Child2.right_children.of_type(c1))
+            .filter(c1.left_child2 == c22)
             .statement,
             "SELECT child2.id, parent.id AS id_1, parent.cls "
             "FROM secondary AS secondary_1, parent "
@@ -824,7 +936,7 @@ class SelfReferentialM2MTest(fixtures.MappedTest, AssertsCompiledSQL):
 
         # test that the splicing of the join works here, doesn't break in
         # the middle of "parent join child1"
-        q = sess.query(Child1).options(joinedload("left_child2"))
+        q = sess.query(Child1).options(joinedload(Child1.left_child2))
         self.assert_compile(
             q.limit(1).statement,
             "SELECT child1.id, parent.id AS id_1, parent.cls, "
@@ -856,7 +968,7 @@ class SelfReferentialM2MTest(fixtures.MappedTest, AssertsCompiledSQL):
         sess.flush()
         sess.expunge_all()
 
-        query_ = sess.query(Child1).options(subqueryload("left_child2"))
+        query_ = sess.query(Child1).options(subqueryload(Child1.left_child2))
         for row in query_.all():
             assert row.left_child2
 
@@ -934,13 +1046,13 @@ class EagerToSubclassTest(fixtures.MappedTest):
         related = cls.tables.related
         Related = cls.classes.Related
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Parent,
             parent,
             properties={"children": relationship(Sub, order_by=sub.c.data)},
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Base,
             base,
             polymorphic_on=base.c.type,
@@ -948,9 +1060,11 @@ class EagerToSubclassTest(fixtures.MappedTest):
             properties={"related": relationship(Related)},
         )
 
-        mapper(Sub, sub, inherits=Base, polymorphic_identity="s")
+        cls.mapper_registry.map_imperatively(
+            Sub, sub, inherits=Base, polymorphic_identity="s"
+        )
 
-        mapper(Related, related)
+        cls.mapper_registry.map_imperatively(Related, related)
 
     @classmethod
     def insert_data(cls, connection):
@@ -1110,14 +1224,14 @@ class SubClassEagerToSubClassTest(fixtures.MappedTest):
         subparent = cls.tables.subparent
         Subparent = cls.classes.Subparent
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Parent,
             parent,
             polymorphic_on=parent.c.type,
             polymorphic_identity="b",
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Subparent,
             subparent,
             inherits=Parent,
@@ -1125,11 +1239,13 @@ class SubClassEagerToSubClassTest(fixtures.MappedTest):
             properties={"children": relationship(Sub, order_by=base.c.id)},
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Base, base, polymorphic_on=base.c.type, polymorphic_identity="b"
         )
 
-        mapper(Sub, sub, inherits=Base, polymorphic_identity="s")
+        cls.mapper_registry.map_imperatively(
+            Sub, sub, inherits=Base, polymorphic_identity="s"
+        )
 
     @classmethod
     def insert_data(cls, connection):
@@ -1166,7 +1282,9 @@ class SubClassEagerToSubClassTest(fixtures.MappedTest):
 
         def go():
             eq_(
-                sess.query(Subparent).options(joinedload("children")).all(),
+                sess.query(Subparent)
+                .options(joinedload(Subparent.children))
+                .all(),
                 [p1, p2],
             )
 
@@ -1194,7 +1312,7 @@ class SubClassEagerToSubClassTest(fixtures.MappedTest):
             eq_(
                 sess.query(Subparent)
                 .join(Subparent.children)
-                .options(contains_eager("children"))
+                .options(contains_eager(Subparent.children))
                 .all(),
                 [p1, p2],
             )
@@ -1220,7 +1338,9 @@ class SubClassEagerToSubClassTest(fixtures.MappedTest):
 
         def go():
             eq_(
-                sess.query(Subparent).options(subqueryload("children")).all(),
+                sess.query(Subparent)
+                .options(subqueryload(Subparent.children))
+                .all(),
                 [p1, p2],
             )
 
@@ -1301,22 +1421,24 @@ class SameNamedPropTwoPolymorphicSubClassesTest(fixtures.MappedTest):
         C = cls.classes.C
         D = cls.classes.D
 
-        mapper(A, cls.tables.a, polymorphic_on=cls.tables.a.c.type)
-        mapper(
+        cls.mapper_registry.map_imperatively(
+            A, cls.tables.a, polymorphic_on=cls.tables.a.c.type
+        )
+        cls.mapper_registry.map_imperatively(
             B,
             cls.tables.b,
             inherits=A,
             polymorphic_identity="b",
             properties={"related": relationship(D, secondary=cls.tables.btod)},
         )
-        mapper(
+        cls.mapper_registry.map_imperatively(
             C,
             cls.tables.c,
             inherits=A,
             polymorphic_identity="c",
             properties={"related": relationship(D, secondary=cls.tables.ctod)},
         )
-        mapper(D, cls.tables.d)
+        cls.mapper_registry.map_imperatively(D, cls.tables.d)
 
     @classmethod
     def insert_data(cls, connection):
@@ -1348,27 +1470,6 @@ class SameNamedPropTwoPolymorphicSubClassesTest(fixtures.MappedTest):
 
         self.assert_sql_count(testing.db, go, 3)
 
-    def test_fixed_w_poly_subquery(self):
-        A = self.classes.A
-        B = self.classes.B
-        C = self.classes.C
-        D = self.classes.D
-
-        session = fixture_session()
-        d = session.query(D).one()
-
-        def go():
-            # NOTE: subqueryload is broken for this case, first found
-            # when cartesian product detection was added.
-            for a in (
-                session.query(A)
-                .with_polymorphic([B, C])
-                .options(selectinload(B.related), selectinload(C.related))
-            ):
-                eq_(a.related, [d])
-
-        self.assert_sql_count(testing.db, go, 3)
-
     def test_free_w_poly_joined(self):
         A = self.classes.A
         B = self.classes.B
@@ -1382,25 +1483,6 @@ class SameNamedPropTwoPolymorphicSubClassesTest(fixtures.MappedTest):
         def go():
             for a in session.query(a_poly).options(
                 joinedload(a_poly.B.related), joinedload(a_poly.C.related)
-            ):
-                eq_(a.related, [d])
-
-        self.assert_sql_count(testing.db, go, 1)
-
-    def test_fixed_w_poly_joined(self):
-        A = self.classes.A
-        B = self.classes.B
-        C = self.classes.C
-        D = self.classes.D
-
-        session = fixture_session()
-        d = session.query(D).one()
-
-        def go():
-            for a in (
-                session.query(A)
-                .with_polymorphic([B, C])
-                .options(joinedload(B.related), joinedload(C.related))
             ):
                 eq_(a.related, [d])
 
@@ -1466,15 +1548,15 @@ class SubClassToSubClassFromParentTest(fixtures.MappedTest):
         B = cls.classes.B
         D = cls.classes.D
 
-        mapper(Z, cls.tables.z)
-        mapper(
+        cls.mapper_registry.map_imperatively(Z, cls.tables.z)
+        cls.mapper_registry.map_imperatively(
             A,
             cls.tables.a,
             polymorphic_on=cls.tables.a.c.type,
             with_polymorphic="*",
             properties={"zs": relationship(Z, lazy="subquery")},
         )
-        mapper(
+        cls.mapper_registry.map_imperatively(
             B,
             cls.tables.b,
             inherits=A,
@@ -1487,7 +1569,9 @@ class SubClassToSubClassFromParentTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(D, cls.tables.d, inherits=A, polymorphic_identity="d")
+        cls.mapper_registry.map_imperatively(
+            D, cls.tables.d, inherits=A, polymorphic_identity="d"
+        )
 
     @classmethod
     def insert_data(cls, connection):
@@ -1623,21 +1707,25 @@ class SubClassToSubClassMultiTest(AssertsCompiledSQL, fixtures.MappedTest):
     def setup_mappers(cls):
         Parent, Base1, Base2, Sub1, Sub2, EP1, EP2 = cls._classes()
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Parent, cls.tables.parent, properties={"sub1": relationship(Sub1)}
         )
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Base1, cls.tables.base1, properties={"sub2": relationship(Sub2)}
         )
-        mapper(Sub1, cls.tables.sub1, inherits=Base1)
-        mapper(
+        cls.mapper_registry.map_imperatively(
+            Sub1, cls.tables.sub1, inherits=Base1
+        )
+        cls.mapper_registry.map_imperatively(
             Base2,
             cls.tables.base2,
             properties={"ep1": relationship(EP1), "ep2": relationship(EP2)},
         )
-        mapper(Sub2, cls.tables.sub2, inherits=Base2)
-        mapper(EP1, cls.tables.ep1)
-        mapper(EP2, cls.tables.ep2)
+        cls.mapper_registry.map_imperatively(
+            Sub2, cls.tables.sub2, inherits=Base2
+        )
+        cls.mapper_registry.map_imperatively(EP1, cls.tables.ep1)
+        cls.mapper_registry.map_imperatively(EP2, cls.tables.ep2)
 
     def test_one(self):
         Parent, Base1, Base2, Sub1, Sub2, EP1, EP2 = self._classes()
@@ -1645,7 +1733,8 @@ class SubClassToSubClassMultiTest(AssertsCompiledSQL, fixtures.MappedTest):
         s = fixture_session()
         self.assert_compile(
             s.query(Parent)
-            .join(Parent.sub1, Sub1.sub2)
+            .join(Parent.sub1)
+            .join(Sub1.sub2)
             .join(Sub2.ep1)
             .join(Sub2.ep2),
             "SELECT parent.id AS parent_id, parent.data AS parent_data "
@@ -2101,7 +2190,7 @@ class ContainsEagerMultipleOfType(
             "a_b.kind AS a_b_kind, a_b.a_id AS a_b_a_id, a.id AS a_id_1, "
             "a.kind AS a_kind, a.a_id AS a_a_id FROM a "
             "LEFT OUTER JOIN a AS a_b ON a.id = a_b.a_id AND a_b.kind IN "
-            "([POSTCOMPILE_kind_1]) LEFT OUTER JOIN x AS b_x "
+            "(__[POSTCOMPILE_kind_1]) LEFT OUTER JOIN x AS b_x "
             "ON a_b.id = b_x.a_id",
         )
 
@@ -2294,7 +2383,7 @@ class JoinedloadOverWPolyAliased(
             joinedload(cls.links).joinedload(Link.child).joinedload(cls.links)
         )
         if cls is self.classes.Sub1:
-            extra = " WHERE parent.type IN ([POSTCOMPILE_type_1])"
+            extra = " WHERE parent.type IN (__[POSTCOMPILE_type_1])"
         else:
             extra = ""
 
@@ -2324,7 +2413,7 @@ class JoinedloadOverWPolyAliased(
         )
 
         if Link.child.property.mapper.class_ is self.classes.Sub1:
-            extra = "AND parent_1.type IN ([POSTCOMPILE_type_1]) "
+            extra = "AND parent_1.type IN (__[POSTCOMPILE_type_1]) "
         else:
             extra = ""
 
@@ -2423,9 +2512,9 @@ class JoinedloadOverWPolyAliased(
 class JoinAcrossJoinedInhMultiPath(
     fixtures.DeclarativeMappedTest, testing.AssertsCompiledSQL
 ):
-    """test long join paths with a joined-inh in the middle, where we go multiple
-    times across the same joined-inh to the same target but with other classes
-    in the middle.    E.g. test [ticket:2908]
+    """test long join paths with a joined-inh in the middle, where we go
+    multiple times across the same joined-inh to the same target but with
+    other classes in the middle.  E.g. test [ticket:2908]
     """
 
     run_setup_mappers = "once"
@@ -2632,10 +2721,10 @@ class MultipleAdaptUsesEntityOverTableTest(
     def setup_mappers(cls):
         A, B, C, D = cls.classes.A, cls.classes.B, cls.classes.C, cls.classes.D
         a, b, c, d = cls.tables.a, cls.tables.b, cls.tables.c, cls.tables.d
-        mapper(A, a)
-        mapper(B, b, inherits=A)
-        mapper(C, c, inherits=A)
-        mapper(D, d, inherits=A)
+        cls.mapper_registry.map_imperatively(A, a)
+        cls.mapper_registry.map_imperatively(B, b, inherits=A)
+        cls.mapper_registry.map_imperatively(C, c, inherits=A)
+        cls.mapper_registry.map_imperatively(D, d, inherits=A)
 
     def _two_join_fixture(self):
         B, C, D = (self.classes.B, self.classes.C, self.classes.D)
@@ -2649,7 +2738,9 @@ class MultipleAdaptUsesEntityOverTableTest(
 
     def test_two_joins_adaption(self):
         a, c, d = self.tables.a, self.tables.c, self.tables.d
-        q = self._two_join_fixture()._compile_state()
+
+        with _aliased_join_warning("C->c"), _aliased_join_warning("D->d"):
+            q = self._two_join_fixture()._compile_state()
 
         btoc = q.from_clauses[0].left
 
@@ -2678,15 +2769,18 @@ class MultipleAdaptUsesEntityOverTableTest(
 
     def test_two_joins_sql(self):
         q = self._two_join_fixture()
-        self.assert_compile(
-            q,
-            "SELECT a.name AS a_name, a_1.name AS a_1_name, "
-            "a_2.name AS a_2_name "
-            "FROM a JOIN b ON a.id = b.id JOIN "
-            "(a AS a_1 JOIN c AS c_1 ON a_1.id = c_1.id) ON c_1.bid = b.id "
-            "JOIN (a AS a_2 JOIN d AS d_1 ON a_2.id = d_1.id) "
-            "ON d_1.cid = c_1.id",
-        )
+
+        with _aliased_join_warning("C->c"), _aliased_join_warning("D->d"):
+            self.assert_compile(
+                q,
+                "SELECT a.name AS a_name, a_1.name AS a_1_name, "
+                "a_2.name AS a_2_name "
+                "FROM a JOIN b ON a.id = b.id JOIN "
+                "(a AS a_1 JOIN c AS c_1 ON a_1.id = c_1.id) "
+                "ON c_1.bid = b.id "
+                "JOIN (a AS a_2 JOIN d AS d_1 ON a_2.id = d_1.id) "
+                "ON d_1.cid = c_1.id",
+            )
 
 
 class SameNameOnJoined(fixtures.MappedTest):
@@ -2730,7 +2824,7 @@ class SameNameOnJoined(fixtures.MappedTest):
         class B(cls.Comparable):
             pass
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             A,
             cls.tables.a,
             polymorphic_on=cls.tables.a.c.t,
@@ -2738,7 +2832,7 @@ class SameNameOnJoined(fixtures.MappedTest):
             properties={"bs": relationship(B, cascade="all, delete-orphan")},
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             ASub,
             cls.tables.a_sub,
             inherits=A,
@@ -2746,7 +2840,7 @@ class SameNameOnJoined(fixtures.MappedTest):
             properties={"bs": relationship(B, cascade="all, delete-orphan")},
         )
 
-        mapper(B, cls.tables.b)
+        cls.mapper_registry.map_imperatively(B, cls.tables.b)
 
     def test_persist(self):
         A, ASub, B = self.classes("A", "ASub", "B")
@@ -2810,33 +2904,45 @@ class BetweenSubclassJoinWExtraJoinedLoad(
                 backref=backref("last_seen", lazy=False),
             )
 
-    def test_query(self):
+    @testing.combinations((True,), (False,), argnames="autoalias")
+    def test_query_auto(self, autoalias):
         Engineer, Manager = self.classes("Engineer", "Manager")
 
         sess = fixture_session()
 
-        # eager join is both from Enginer->LastSeen as well as
-        # Manager->LastSeen.  In the case of Manager->LastSeen,
-        # Manager is internally aliased, and comes to JoinedEagerLoader
-        # with no "parent" entity but an adapter.
-        q = sess.query(Engineer, Manager).join(Engineer.manager)
-        self.assert_compile(
-            q,
-            "SELECT people.type AS people_type, engineers.id AS engineers_id, "
-            "people.id AS people_id, "
-            "engineers.primary_language AS engineers_primary_language, "
-            "engineers.manager_id AS engineers_manager_id, "
-            "people_1.type AS people_1_type, managers_1.id AS managers_1_id, "
-            "people_1.id AS people_1_id, seen_1.id AS seen_1_id, "
-            "seen_1.timestamp AS seen_1_timestamp, seen_2.id AS seen_2_id, "
-            "seen_2.timestamp AS seen_2_timestamp "
-            "FROM people JOIN engineers ON people.id = engineers.id "
-            "JOIN (people AS people_1 JOIN managers AS managers_1 "
-            "ON people_1.id = managers_1.id) "
-            "ON managers_1.id = engineers.manager_id LEFT OUTER JOIN "
-            "seen AS seen_1 ON people.id = seen_1.id LEFT OUTER JOIN "
-            "seen AS seen_2 ON people_1.id = seen_2.id",
-        )
+        if autoalias:
+            # eager join is both from Enginer->LastSeen as well as
+            # Manager->LastSeen.  In the case of Manager->LastSeen,
+            # Manager is internally aliased, and comes to JoinedEagerLoader
+            # with no "parent" entity but an adapter.
+            q = sess.query(Engineer, Manager).join(Engineer.manager)
+        else:
+            m1 = aliased(Manager, flat=True)
+            q = sess.query(Engineer, m1).join(Engineer.manager.of_type(m1))
+
+        with _aliased_join_warning(
+            "Manager->managers"
+        ) if autoalias else util.nullcontext():
+            self.assert_compile(
+                q,
+                "SELECT people.type AS people_type, engineers.id AS "
+                "engineers_id, "
+                "people.id AS people_id, "
+                "engineers.primary_language AS engineers_primary_language, "
+                "engineers.manager_id AS engineers_manager_id, "
+                "people_1.type AS people_1_type, "
+                "managers_1.id AS managers_1_id, "
+                "people_1.id AS people_1_id, seen_1.id AS seen_1_id, "
+                "seen_1.timestamp AS seen_1_timestamp, "
+                "seen_2.id AS seen_2_id, "
+                "seen_2.timestamp AS seen_2_timestamp "
+                "FROM people JOIN engineers ON people.id = engineers.id "
+                "JOIN (people AS people_1 JOIN managers AS managers_1 "
+                "ON people_1.id = managers_1.id) "
+                "ON managers_1.id = engineers.manager_id LEFT OUTER JOIN "
+                "seen AS seen_1 ON people.id = seen_1.id LEFT OUTER JOIN "
+                "seen AS seen_2 ON people_1.id = seen_2.id",
+            )
 
 
 class M2ODontLoadSiblingTest(fixtures.DeclarativeMappedTest):
@@ -2909,3 +3015,111 @@ class M2ODontLoadSiblingTest(fixtures.DeclarativeMappedTest):
 
         is_(obj.child2, None)
         is_(obj.parent, c1)
+
+
+class JoinedLoadSpliceFromJoinedTest(
+    testing.AssertsCompiledSQL, fixtures.DeclarativeMappedTest
+):
+    """test #8378"""
+
+    __dialect__ = "default"
+    run_create_tables = None
+
+    @classmethod
+    def setup_classes(cls):
+        Base = cls.DeclarativeBasic
+
+        class Root(Base):
+            __tablename__ = "root"
+
+            id = Column(Integer, primary_key=True)
+            root_elements = relationship("BaseModel")
+
+        class BaseModel(Base):
+            __tablename__ = "base_model"
+
+            id = Column(Integer, primary_key=True)
+            root_id = Column(Integer, ForeignKey("root.id"), nullable=False)
+            type = Column(String, nullable=False)
+            __mapper_args__ = {"polymorphic_on": type}
+
+        class SubModel(BaseModel):
+            elements = relationship("SubModelElement")
+            __mapper_args__ = {"polymorphic_identity": "sub_model"}
+
+        class SubModelElement(Base):
+            __tablename__ = "sub_model_element"
+
+            id = Column(Integer, primary_key=True)
+            model_id = Column(ForeignKey("base_model.id"), nullable=False)
+
+    def test_oj_ij(self):
+        Root, SubModel = self.classes("Root", "SubModel")
+
+        s = Session()
+        query = s.query(Root)
+        query = query.options(
+            joinedload(Root.root_elements.of_type(SubModel)).joinedload(
+                SubModel.elements, innerjoin=True
+            )
+        )
+        self.assert_compile(
+            query,
+            "SELECT root.id AS root_id, base_model_1.id AS base_model_1_id, "
+            "base_model_1.root_id AS base_model_1_root_id, "
+            "base_model_1.type AS base_model_1_type, "
+            "sub_model_element_1.id AS sub_model_element_1_id, "
+            "sub_model_element_1.model_id AS sub_model_element_1_model_id "
+            "FROM root LEFT OUTER JOIN (base_model AS base_model_1 "
+            "JOIN sub_model_element AS sub_model_element_1 "
+            "ON base_model_1.id = sub_model_element_1.model_id) "
+            "ON root.id = base_model_1.root_id",
+        )
+
+    def test_ij_oj(self):
+        Root, SubModel = self.classes("Root", "SubModel")
+
+        s = Session()
+        query = s.query(Root)
+        query = query.options(
+            joinedload(
+                Root.root_elements.of_type(SubModel), innerjoin=True
+            ).joinedload(SubModel.elements)
+        )
+        self.assert_compile(
+            query,
+            "SELECT root.id AS root_id, base_model_1.id AS base_model_1_id, "
+            "base_model_1.root_id AS base_model_1_root_id, "
+            "base_model_1.type AS base_model_1_type, "
+            "sub_model_element_1.id AS sub_model_element_1_id, "
+            "sub_model_element_1.model_id AS sub_model_element_1_model_id "
+            "FROM root JOIN base_model AS base_model_1 "
+            "ON root.id = base_model_1.root_id "
+            "LEFT OUTER JOIN sub_model_element AS sub_model_element_1 "
+            "ON base_model_1.id = sub_model_element_1.model_id"
+            "",
+        )
+
+    def test_ij_ij(self):
+        Root, SubModel = self.classes("Root", "SubModel")
+
+        s = Session()
+        query = s.query(Root)
+        query = query.options(
+            joinedload(
+                Root.root_elements.of_type(SubModel), innerjoin=True
+            ).joinedload(SubModel.elements, innerjoin=True)
+        )
+        self.assert_compile(
+            query,
+            "SELECT root.id AS root_id, base_model_1.id AS base_model_1_id, "
+            "base_model_1.root_id AS base_model_1_root_id, "
+            "base_model_1.type AS base_model_1_type, "
+            "sub_model_element_1.id AS sub_model_element_1_id, "
+            "sub_model_element_1.model_id AS sub_model_element_1_model_id "
+            "FROM root JOIN base_model AS base_model_1 "
+            "ON root.id = base_model_1.root_id "
+            "JOIN sub_model_element AS sub_model_element_1 "
+            "ON base_model_1.id = sub_model_element_1.model_id"
+            "",
+        )

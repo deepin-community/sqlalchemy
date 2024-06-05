@@ -35,8 +35,7 @@ directly to :func:`~sqlalchemy.create_engine` as keyword arguments:
 ``pool_size``, ``max_overflow``, ``pool_recycle`` and
 ``pool_timeout``.  For example::
 
-  engine = create_engine('postgresql://me@localhost/mydb',
-                         pool_size=20, max_overflow=0)
+  engine = create_engine("postgresql://me@localhost/mydb", pool_size=20, max_overflow=0)
 
 In the case of SQLite, the :class:`.SingletonThreadPool` or
 :class:`.NullPool` are selected by the dialect to provide
@@ -68,14 +67,16 @@ of building the pool for you.   Common options include specifying
 :class:`.QueuePool` with SQLite::
 
     from sqlalchemy.pool import QueuePool
-    engine = create_engine('sqlite:///file.db', poolclass=QueuePool)
+
+    engine = create_engine("sqlite:///file.db", poolclass=QueuePool)
 
 Disabling pooling using :class:`.NullPool`::
 
     from sqlalchemy.pool import NullPool
+
     engine = create_engine(
-              'postgresql+psycopg2://scott:tiger@localhost/test',
-              poolclass=NullPool)
+        "postgresql+psycopg2://scott:tiger@localhost/test", poolclass=NullPool
+    )
 
 Using a Custom Connection Function
 ----------------------------------
@@ -95,9 +96,11 @@ by any additional options::
     import sqlalchemy.pool as pool
     import psycopg2
 
+
     def getconn():
-        c = psycopg2.connect(user='ed', host='127.0.0.1', dbname='test')
+        c = psycopg2.connect(user="ed", host="127.0.0.1", dbname="test")
         return c
+
 
     mypool = pool.QueuePool(getconn, max_overflow=10, pool_size=5)
 
@@ -109,8 +112,8 @@ connection that's contained within a transparent proxy::
     conn = mypool.connect()
 
     # use it
-    cursor = conn.cursor()
-    cursor.execute("select foo")
+    cursor_obj = conn.cursor()
+    cursor_obj.execute("select foo")
 
 The purpose of the transparent proxy is to intercept the ``close()`` call,
 such that instead of the DBAPI connection being closed, it is returned to the
@@ -130,42 +133,116 @@ however and in particular is not supported with asyncio DBAPI drivers.
 Reset On Return
 ---------------
 
-The pool also includes the a "reset on return" feature which will call the
-``rollback()`` method of the DBAPI connection when the connection is returned
-to the pool. This is so that any existing
-transaction on the connection is removed, not only ensuring that no existing
-state remains on next usage, but also so that table and row locks are released
-as well as that any isolated data snapshots are removed.   This ``rollback()``
-occurs in most cases even when using an :class:`_engine.Engine` object,
-except in the case when the :class:`_engine.Connection` can guarantee
-that a ``rollback()`` has been called immediately before the connection
-is returned to the pool.
-
-For most DBAPIs, the call to ``rollback()`` is very inexpensive and if the
+The pool includes "reset on return" behavior which will call the ``rollback()``
+method of the DBAPI connection when the connection is returned to the pool.
+This is so that any existing transactional state is removed from the
+connection, which includes not just uncommitted data but table and row locks as
+well. For most DBAPIs, the call to ``rollback()`` is inexpensive, and if the
 DBAPI has already completed a transaction, the method should be a no-op.
-However, for DBAPIs that incur performance issues with ``rollback()`` even if
-there's no state on the connection, this behavior can be disabled using the
-``reset_on_return`` option of :class:`_pool.Pool`.   The behavior is safe
-to disable under the following conditions:
 
-* If the database does not support transactions at all, such as using
-  MySQL with the MyISAM engine, or the DBAPI is used in autocommit
-  mode only, the behavior can be disabled.
-* If the pool itself doesn't maintain a connection after it's checked in,
-  such as when using :class:`.NullPool`, the behavior can be disabled.
-* Otherwise, it must be ensured that:
-  * the application ensures that all :class:`_engine.Connection`
-    objects are explicitly closed out using a context manager (i.e. ``with``
-    block) or a ``try/finally`` style block
-  * connections are never allowed to be garbage collected before being explicitly
-    closed.
-  * the DBAPI connection itself, e.g. ``connection.connection``, is not used
-    directly, or the application ensures that ``.rollback()`` is called
-    on this connection before releasing it back to the connection pool.
+Disabling Reset on Return for non-transactional connections
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The "reset on return" step may be logged using the ``logging.DEBUG``
+For very specific cases where this ``rollback()`` is not useful, such as when
+using a connection that is configured for
+:ref:`autocommit <dbapi_autocommit_understanding>` or when using a database
+that has no ACID capabilities such as the MyISAM engine of MySQL, the
+reset-on-return behavior can be disabled, which is typically done for
+performance reasons. This can be affected by using the
+:paramref:`_pool.Pool.reset_on_return` parameter of :class:`_pool.Pool`, which
+is also available from :func:`_sa.create_engine` as
+:paramref:`_sa.create_engine.pool_reset_on_return`, passing a value of ``None``.
+This is illustrated in the example below, in conjunction with the
+:paramref:`_sa.create_engine.isolation_level` parameter setting of
+``AUTOCOMMIT``::
+
+    non_acid_engine = create_engine(
+        "mysql://scott:tiger@host/db",
+        pool_reset_on_return=None,
+        isolation_level="AUTOCOMMIT",
+    )
+
+The above engine won't actually perform ROLLBACK when connections are returned
+to the pool; since AUTOCOMMIT is enabled, the driver will also not perform
+any BEGIN operation.
+
+Custom Reset-on-Return Schemes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+"reset on return" consisting of a single ``rollback()`` may not be sufficient
+for some use cases; in particular, applications which make use of temporary
+tables may wish for these tables to be automatically removed on connection
+checkin. Some (but notably not all) backends include features that can "reset"
+such tables within the scope of a database connection, which may be a desirable
+behavior for connection pool reset. Other server resources such as prepared
+statement handles and server-side statement caches may persist beyond the
+checkin process, which may or may not be desirable, depending on specifics.
+Again, some (but again not all) backends may provide for a means of resetting
+this state.  The two SQLAlchemy included dialects which are known to have
+such reset schemes include Microsoft SQL Server, where an undocumented but
+widely known stored procedure called ``sp_reset_connection`` is often used,
+and PostgreSQL, which has a well-documented series of commands including
+``DISCARD`` ``RESET``, ``DEALLOCATE``, and ``UNLISTEN``.
+
+.. note: next paragraph + example should match mssql/base.py example
+
+The following example illustrates how to replace reset on return with the
+Microsoft SQL Server ``sp_reset_connection`` stored procedure, using the
+:meth:`.PoolEvents.reset` event hook (**requires SQLAlchemy 1.4.43 or greater**).
+The :paramref:`_sa.create_engine.pool_reset_on_return` parameter is set to
+``None`` so that the custom scheme can replace the default behavior completely.
+The custom hook implementation calls ``.rollback()`` in any case, as it's
+usually important that the DBAPI's own tracking of commit/rollback will remain
+consistent with the state of the transaction::
+
+    from sqlalchemy import create_engine
+    from sqlalchemy import event
+
+    mssql_engine = create_engine(
+        "mssql+pyodbc://scott:tiger^5HHH@mssql2017:1433/test?driver=ODBC+Driver+17+for+SQL+Server",
+        # disable default reset-on-return scheme
+        pool_reset_on_return=None,
+    )
+
+
+    @event.listens_for(mssql_engine, "reset")
+    def _reset_mssql(dbapi_connection, connection_record, reset_state):
+        dbapi_connection.execute("{call sys.sp_reset_connection}")
+
+        # so that the DBAPI itself knows that the connection has been
+        # reset
+        dbapi_connection.rollback()
+
+.. versionchanged:: 1.4.43  Ensured the :meth:`.PoolEvents.reset` event
+   is invoked for all "reset" occurrences, so that it's appropriate
+   as a place for custom "reset" handlers.   Previous schemes which
+   use the :meth:`.PoolEvents.checkin` handler remain usable as well.
+
+.. seealso::
+    * :ref:`mssql_reset_on_return` - in the :ref:`mssql_toplevel` documentation
+    * :ref:`postgresql_reset_on_return` in the :ref:`postgresql_toplevel` documentation
+
+Logging reset-on-return events
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Logging for pool events including reset on return can be set
+``logging.DEBUG``
 log level along with the ``sqlalchemy.pool`` logger, or by setting
-``echo_pool='debug'`` with :func:`_sa.create_engine`.
+:paramref:`_sa.create_engine.echo_pool` to ``"debug"`` when using
+:func:`_sa.create_engine`::
+
+    >>> from sqlalchemy import create_engine
+    >>> engine = create_engine("postgresql://scott:tiger@localhost/test", echo_pool="debug")
+
+The above pool will show verbose logging including reset on return::
+
+    >>> c1 = engine.connect()
+    DEBUG sqlalchemy.pool.impl.QueuePool Created new connection <connection object ...>
+    DEBUG sqlalchemy.pool.impl.QueuePool Connection <connection object ...> checked out from pool
+    >>> c1.close()
+    DEBUG sqlalchemy.pool.impl.QueuePool Connection <connection object ...> being returned to pool
+    DEBUG sqlalchemy.pool.impl.QueuePool Connection <connection object ...> rollback-on-return
+
 
 Pool Events
 -----------
@@ -262,6 +339,7 @@ behaviors are needed::
 
     some_engine = create_engine(...)
 
+
     @event.listens_for(some_engine, "engine_connect")
     def ping_connection(connection, branch):
         if branch:
@@ -326,6 +404,7 @@ that they are replaced with new ones upon next checkout.  This flow is
 illustrated by the code example below::
 
     from sqlalchemy import create_engine, exc
+
     e = create_engine(...)
     c = e.connect()
 
@@ -333,7 +412,7 @@ illustrated by the code example below::
         # suppose the database has been restarted.
         c.execute(text("SELECT * FROM table"))
         c.close()
-    except exc.DBAPIError, e:
+    except exc.DBAPIError as e:
         # an exception is raised, Connection is invalidated.
         if e.connection_invalidated:
             print("Connection was invalidated!")
@@ -364,6 +443,7 @@ such as MySQL that automatically close connections that have been stale after a 
 period of time::
 
     from sqlalchemy import create_engine
+
     e = create_engine("mysql://scott:tiger@localhost/test", pool_recycle=3600)
 
 Above, any DBAPI connection that has been open for more than one hour will be invalidated and replaced,
@@ -432,8 +512,7 @@ close these connections out.   The difference between FIFO and LIFO is
 basically whether or not its desirable for the pool to keep a full set of
 connections ready to go even during idle periods::
 
-    engine = create_engine(
-        "postgreql://", pool_use_lifo=True, pool_pre_ping=True)
+    engine = create_engine("postgreql://", pool_use_lifo=True, pool_pre_ping=True)
 
 Above, we also make use of the :paramref:`_sa.create_engine.pool_pre_ping` flag
 so that connections which are closed from the server side are gracefully
@@ -475,34 +554,72 @@ are three general approaches to this:
    more than once::
 
     from sqlalchemy.pool import NullPool
+
     engine = create_engine("mysql://user:pass@host/dbname", poolclass=NullPool)
 
+2. Call :meth:`_engine.Engine.dispose` on any given :class:`_engine.Engine`,
+   passing the :paramref:`.Engine.dispose.close` parameter with a value of
+   ``False``, within the initialize phase of the child process.  This is
+   so that the new process will not touch any of the parent process' connections
+   and will instead start with new connections.
+   **This is the recommended approach**::
 
-2. Call :meth:`_engine.Engine.dispose` on any given :class:`_engine.Engine` as
-   soon one is within the new process.  In Python multiprocessing, constructs
-   such as ``multiprocessing.Pool`` include "initializer" hooks which are a
-   place that this can be performed; otherwise at the top of where
-   ``os.fork()`` or where the ``Process`` object begins the child fork, a
-   single call to :meth:`_engine.Engine.dispose` will ensure any remaining
-   connections are flushed. **This is the recommended approach**::
+        from multiprocessing import Pool
 
-    engine = create_engine("mysql://user:pass@host/dbname")
+        engine = create_engine("mysql+mysqldb://user:pass@host/dbname")
 
-    def run_in_process():
-        # process starts.  ensure engine.dispose() is called just once
-        # at the beginning
+
+        def run_in_process(some_data_record):
+            with engine.connect() as conn:
+                conn.execute(text("..."))
+
+
+        def initializer():
+            """ensure the parent proc's database connections are not touched
+            in the new connection pool"""
+            engine.dispose(close=False)
+
+
+        with Pool(10, initializer=initializer) as p:
+            p.map(run_in_process, data)
+
+   .. versionadded:: 1.4.33  Added the :paramref:`.Engine.dispose.close`
+      parameter to allow the replacement of a connection pool in a child
+      process without interfering with the connections used by the parent
+      process.
+
+      To achieve the same "dispose without close" behavior prior to version
+      1.4.33 (all SQLAlchemy versions), instead of calling
+      :meth:`.Engine.dispose`, replace the :class:`.Pool` directly using
+      :meth:`.Pool.recreate`::
+
+          engine.pool = engine.pool.recreate()
+
+      The above code is equivalent to ``engine.dispose(close=False)`` with the
+      exception that the :meth:`.ConnectionEvents.engine_disposed` end-user
+      event hook is not invoked; assuming end-user code is not making use of
+      this hook, this workaround has no other negative effects.
+
+3. Call :meth:`.Engine.dispose` **directly before** the child process is
+   created.  This will also cause the child process to start with a new
+   connection pool, while ensuring the parent connections are not transferred
+   to the child process::
+
+        engine = create_engine("mysql://user:pass@host/dbname")
+
+
+        def run_in_process():
+            with engine.connect() as conn:
+                conn.execute(text("..."))
+
+
+        # before process starts, ensure engine.dispose() is called
         engine.dispose()
+        p = Process(target=run_in_process)
+        p.start()
 
-        with engine.connect() as conn:
-            conn.execute(text("..."))
-
-    p = Process(target=run_in_process)
-    p.start()
-
-3. An event handler can be applied to the connection pool that tests for
-   connections being shared across process boundaries, and invalidates them.
-   This approach, **when combined with an explicit call to dispose() as
-   mentioned above**, should cover all cases::
+4. An event handler can be applied to the connection pool that tests for
+   connections being shared across process boundaries, and invalidates them::
 
     from sqlalchemy import event
     from sqlalchemy import exc
@@ -510,19 +627,20 @@ are three general approaches to this:
 
     engine = create_engine("...")
 
+
     @event.listens_for(engine, "connect")
     def connect(dbapi_connection, connection_record):
-        connection_record.info['pid'] = os.getpid()
+        connection_record.info["pid"] = os.getpid()
+
 
     @event.listens_for(engine, "checkout")
     def checkout(dbapi_connection, connection_record, connection_proxy):
         pid = os.getpid()
-        if connection_record.info['pid'] != pid:
-            connection_record.connection = connection_proxy.connection = None
+        if connection_record.info["pid"] != pid:
+            connection_record.dbapi_connection = connection_proxy.dbapi_connection = None
             raise exc.DisconnectionError(
-                    "Connection record belongs to pid %s, "
-                    "attempting to check out in pid %s" %
-                    (connection_record.info['pid'], pid)
+                "Connection record belongs to pid %s, "
+                "attempting to check out in pid %s" % (connection_record.info["pid"], pid)
             )
 
    Above, we use an approach similar to that described in
@@ -530,50 +648,37 @@ are three general approaches to this:
    originated in a different parent process as an "invalid" connection,
    coercing the pool to recycle the connection record to make a new connection.
 
-   When using the above recipe, **ensure the dispose approach from #2 is also
-   used**, as if the connection pool is exhausted in the parent process
-   when the fork occurs, an empty pool will be copied into
-   the child process which will then hang because it has no connections.
-
 The above strategies will accommodate the case of an :class:`_engine.Engine`
-being shared among processes.  However, for the case of a transaction-active
-:class:`.Session` or :class:`_engine.Connection` being shared, there's no automatic
-fix for this; an application needs to ensure a new child process only
-initiate new :class:`_engine.Connection` objects and transactions, as well as ORM
-:class:`.Session` objects.  For a :class:`.Session` object, technically
-this is only needed if the session is currently transaction-bound, however
-the scope of a single :class:`.Session` is in any case intended to be
-kept within a single call stack in any case (e.g. not a global object, not
-shared between processes or threads).
-
+being shared among processes. The above steps alone are not sufficient for the
+case of sharing a specific :class:`_engine.Connection` over a process boundary;
+prefer to keep the scope of a particular :class:`_engine.Connection` local to a
+single process (and thread). It's additionally not supported to share any kind
+of ongoing transactional state directly across a process boundary, such as an
+ORM :class:`_orm.Session` object that's begun a transaction and references
+active :class:`_orm.Connection` instances; again prefer to create new
+:class:`_orm.Session` objects in new processes.
 
 
 API Documentation - Available Pool Implementations
 --------------------------------------------------
 
 .. autoclass:: sqlalchemy.pool.Pool
-
-   .. automethod:: __init__
-   .. automethod:: connect
-   .. automethod:: dispose
-   .. automethod:: recreate
+    :members:
 
 .. autoclass:: sqlalchemy.pool.QueuePool
-
-   .. automethod:: __init__
-   .. automethod:: connect
+    :members:
 
 .. autoclass:: SingletonThreadPool
-
-   .. automethod:: __init__
+    :members:
 
 .. autoclass:: AssertionPool
-
+    :members:
 
 .. autoclass:: NullPool
-
+    :members:
 
 .. autoclass:: StaticPool
+    :members:
 
 .. autoclass:: _ConnectionFairy
     :members:

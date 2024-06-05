@@ -1,12 +1,23 @@
 import random
 
+import sqlalchemy as sa
+from sqlalchemy import Column
+from sqlalchemy import column
 from sqlalchemy import func
 from sqlalchemy import inspect
+from sqlalchemy import Integer
+from sqlalchemy import literal_column
 from sqlalchemy import null
 from sqlalchemy import select
+from sqlalchemy import String
+from sqlalchemy import Table
 from sqlalchemy import testing
 from sqlalchemy import text
 from sqlalchemy import true
+from sqlalchemy import update
+from sqlalchemy import util
+from sqlalchemy.ext.declarative import ConcreteBase
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import Bundle
 from sqlalchemy.orm import defaultload
@@ -16,12 +27,12 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import lazyload
 from sqlalchemy.orm import Load
 from sqlalchemy.orm import load_only
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import Query
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import subqueryload
+from sqlalchemy.orm import synonym
 from sqlalchemy.orm import with_expression
 from sqlalchemy.orm import with_loader_criteria
 from sqlalchemy.orm import with_polymorphic
@@ -30,12 +41,17 @@ from sqlalchemy.sql.expression import case
 from sqlalchemy.sql.visitors import InternalTraversal
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import eq_
+from sqlalchemy.testing import fixtures
+from sqlalchemy.testing import int_within_variance
 from sqlalchemy.testing import ne_
+from sqlalchemy.testing.fixtures import DeclarativeMappedTest
 from sqlalchemy.testing.fixtures import fixture_session
+from sqlalchemy.testing.util import count_cache_key_tuples
+from sqlalchemy.testing.util import total_size
 from test.orm import _fixtures
 from .inheritance import _poly_fixtures
+from .test_events import _RemoveListeners
 from .test_query import QueryTest
-from ..sql.test_compare import CacheKeyFixture
 
 
 def stmt_20(*elements):
@@ -45,7 +61,7 @@ def stmt_20(*elements):
     )
 
 
-class CacheKeyTest(CacheKeyFixture, _fixtures.FixtureTest):
+class CacheKeyTest(fixtures.CacheKeyFixture, _fixtures.FixtureTest):
     run_setup_mappers = "once"
     run_inserts = None
     run_deletes = None
@@ -57,8 +73,19 @@ class CacheKeyTest(CacheKeyFixture, _fixtures.FixtureTest):
     def test_mapper_and_aliased(self):
         User, Address, Keyword = self.classes("User", "Address", "Keyword")
 
+        addresses_table = self.tables.addresses
+
         self._run_cache_key_fixture(
-            lambda: (inspect(User), inspect(Address), inspect(aliased(User))),
+            lambda: (
+                inspect(User),
+                inspect(Address),
+                inspect(aliased(User)),
+                inspect(aliased(aliased(User, addresses_table))),
+                inspect(aliased(aliased(User), addresses_table.select())),
+                inspect(aliased(Address)),
+                inspect(aliased(Address, addresses_table.select())),
+                inspect(aliased(User, addresses_table.select())),
+            ),
             compare_values=True,
         )
 
@@ -244,6 +271,8 @@ class CacheKeyTest(CacheKeyFixture, _fixtures.FixtureTest):
             "User", "Address", "Keyword", "Order", "Item"
         )
 
+        a1 = aliased(Address)
+
         self._run_cache_key_fixture(
             lambda: (
                 Load(User).joinedload(User.addresses),
@@ -256,10 +285,10 @@ class CacheKeyTest(CacheKeyFixture, _fixtures.FixtureTest):
                     User.orders.and_(Order.description != "somename")
                 ),
                 Load(User).defer(User.id),
-                Load(User).subqueryload("addresses"),
-                Load(Address).defer("id"),
+                Load(User).subqueryload(User.addresses),
+                Load(Address).defer(Address.id),
                 Load(Address).defer("*"),
-                Load(aliased(Address)).defer("id"),
+                Load(a1).defer(a1.id),
                 Load(User).joinedload(User.addresses).defer(Address.id),
                 Load(User).joinedload(User.orders).joinedload(Order.items),
                 Load(User).joinedload(User.orders).subqueryload(Order.items),
@@ -271,32 +300,10 @@ class CacheKeyTest(CacheKeyFixture, _fixtures.FixtureTest):
                 Load(User).defaultload(User.orders).defaultload(Order.items),
                 Load(User).defaultload(User.orders),
                 Load(Address).raiseload("*"),
-                Load(Address).raiseload("user"),
+                Load(Address).raiseload(Address.user),
             ),
             compare_values=True,
         )
-
-    def test_bound_options_equiv_on_strname(self):
-        """Bound loader options resolve on string name so test that the cache
-        key for the string version matches the resolved version.
-
-        """
-        User, Address, Keyword, Order, Item = self.classes(
-            "User", "Address", "Keyword", "Order", "Item"
-        )
-
-        for left, right in [
-            (Load(User).defer(User.id), Load(User).defer("id")),
-            (
-                Load(User).joinedload(User.addresses),
-                Load(User).joinedload("addresses"),
-            ),
-            (
-                Load(User).joinedload(User.orders).joinedload(Order.items),
-                Load(User).joinedload("orders").joinedload("items"),
-            ),
-        ]:
-            eq_(left._generate_cache_key(), right._generate_cache_key())
 
     def test_selects_w_orm_joins(self):
 
@@ -348,16 +355,10 @@ class CacheKeyTest(CacheKeyFixture, _fixtures.FixtureTest):
                 .join(User.orders),
                 fixture_session()
                 .query(User)
-                .join("addresses")
-                .join("dingalings", from_joinpoint=True),
-                fixture_session().query(User).join("addresses"),
-                fixture_session().query(User).join("orders"),
-                fixture_session().query(User).join("addresses").join("orders"),
+                .join(User.addresses)
+                .join(Address.dingaling),
                 fixture_session().query(User).join(Address, User.addresses),
-                fixture_session().query(User).join(a1, "addresses"),
-                fixture_session()
-                .query(User)
-                .join(a1, "addresses", aliased=True),
+                fixture_session().query(User).join(a1, User.addresses),
                 fixture_session().query(User).join(User.addresses.of_type(a1)),
             ),
             compare_values=True,
@@ -404,6 +405,35 @@ class CacheKeyTest(CacheKeyFixture, _fixtures.FixtureTest):
                 .query(Address, User)
                 .join(Address.dingaling)
                 .with_entities(Address.id),
+            ),
+            compare_values=True,
+        )
+
+    def test_synonyms(self, registry):
+        """test for issue discovered in #7394"""
+
+        @registry.mapped
+        class User2(object):
+            __table__ = self.tables.users
+
+            name_syn = synonym("name")
+
+        @registry.mapped
+        class Address2(object):
+            __table__ = self.tables.addresses
+
+            name_syn = synonym("email_address")
+
+        self._run_cache_key_fixture(
+            lambda: (
+                User2.id,
+                User2.name,
+                User2.name_syn,
+                Address2.name_syn,
+                Address2.email_address,
+                aliased(User2).name_syn,
+                aliased(User2, name="foo").name_syn,
+                aliased(User2, name="bar").name_syn,
             ),
             compare_values=True,
         )
@@ -565,7 +595,7 @@ class CacheKeyTest(CacheKeyFixture, _fixtures.FixtureTest):
         )
 
 
-class PolyCacheKeyTest(CacheKeyFixture, _poly_fixtures._Polymorphic):
+class PolyCacheKeyTest(fixtures.CacheKeyFixture, _poly_fixtures._Polymorphic):
     run_setup_mappers = "once"
     run_inserts = None
     run_deletes = None
@@ -597,17 +627,98 @@ class PolyCacheKeyTest(CacheKeyFixture, _poly_fixtures._Polymorphic):
             compare_values=True,
         )
 
-    def test_wp_queries(self):
+    def test_wpoly_cache_keys(self):
         Person, Manager, Engineer, Boss = self.classes(
             "Person", "Manager", "Engineer", "Boss"
         )
 
-        def one():
-            return (
-                fixture_session()
-                .query(Person)
-                .with_polymorphic([Manager, Engineer])
-            )
+        meb_stmt = inspect(
+            with_polymorphic(Person, [Manager, Engineer, Boss])
+        ).selectable
+        me_stmt = inspect(
+            with_polymorphic(Person, [Manager, Engineer])
+        ).selectable
+
+        self._run_cache_key_fixture(
+            lambda: (
+                inspect(Person),
+                inspect(
+                    aliased(Person, me_stmt),
+                ),
+                inspect(
+                    aliased(Person, meb_stmt),
+                ),
+                inspect(
+                    with_polymorphic(Person, [Manager, Engineer]),
+                ),
+                # aliased=True is the same as flat=True for default selectable
+                inspect(
+                    with_polymorphic(
+                        Person, [Manager, Engineer], aliased=True
+                    ),
+                ),
+                inspect(
+                    with_polymorphic(Person, [Manager, Engineer], flat=True),
+                ),
+                inspect(
+                    with_polymorphic(
+                        Person, [Manager, Engineer], flat=True, innerjoin=True
+                    ),
+                ),
+                inspect(
+                    with_polymorphic(
+                        Person,
+                        [Manager, Engineer],
+                        flat=True,
+                        _use_mapper_path=True,
+                    ),
+                ),
+                inspect(
+                    with_polymorphic(
+                        Person,
+                        [Manager, Engineer],
+                        flat=True,
+                        adapt_on_names=True,
+                    ),
+                ),
+                inspect(
+                    with_polymorphic(
+                        Person, [Manager, Engineer], selectable=meb_stmt
+                    ),
+                ),
+                inspect(
+                    with_polymorphic(
+                        Person,
+                        [Manager, Engineer],
+                        selectable=meb_stmt,
+                        aliased=True,
+                    ),
+                ),
+                inspect(
+                    with_polymorphic(Person, [Manager, Engineer, Boss]),
+                ),
+                inspect(
+                    with_polymorphic(
+                        Person,
+                        [Manager, Engineer, Boss],
+                        polymorphic_on=literal_column("foo"),
+                    ),
+                ),
+                inspect(
+                    with_polymorphic(
+                        Person,
+                        [Manager, Engineer, Boss],
+                        polymorphic_on=literal_column("bar"),
+                    ),
+                ),
+            ),
+            compare_values=True,
+        )
+
+    def test_wp_queries(self):
+        Person, Manager, Engineer, Boss = self.classes(
+            "Person", "Manager", "Engineer", "Boss"
+        )
 
         def two():
             wp = with_polymorphic(Person, [Manager, Engineer])
@@ -624,14 +735,6 @@ class PolyCacheKeyTest(CacheKeyFixture, _poly_fixtures._Polymorphic):
 
             return fixture_session().query(wp).filter(wp.name == "asdfo")
 
-        def four():
-            return (
-                fixture_session()
-                .query(Person)
-                .with_polymorphic([Manager, Engineer])
-                .filter(Person.name == "asdf")
-            )
-
         def five():
             subq = (
                 select(Person)
@@ -643,25 +746,8 @@ class PolyCacheKeyTest(CacheKeyFixture, _poly_fixtures._Polymorphic):
 
             return fixture_session().query(wp).filter(wp.name == "asdfo")
 
-        def six():
-            subq = (
-                select(Person)
-                .outerjoin(Manager)
-                .outerjoin(Engineer)
-                .subquery()
-            )
-
-            return (
-                fixture_session()
-                .query(Person)
-                .with_polymorphic([Manager, Engineer], subq)
-                .filter(Person.name == "asdfo")
-            )
-
         self._run_cache_key_fixture(
-            lambda: stmt_20(
-                one(), two(), three(), three_a(), four(), five(), six()
-            ),
+            lambda: stmt_20(two(), three(), three_a(), five()),
             compare_values=True,
         )
 
@@ -701,6 +787,55 @@ class PolyCacheKeyTest(CacheKeyFixture, _poly_fixtures._Polymorphic):
             compare_values=True,
         )
 
+    @testing.variation(
+        "exprtype", ["plain_column", "self_standing_case", "case_w_columns"]
+    )
+    def test_hybrid_w_case_ac(self, decl_base, exprtype):
+        """test #9728"""
+
+        class Employees(decl_base):
+            __tablename__ = "employees"
+            id = Column(String(128), primary_key=True)
+            first_name = Column(String(length=64))
+
+            @hybrid_property
+            def name(self):
+                return self.first_name
+
+            @name.expression
+            def name(
+                cls,
+            ):
+                if exprtype.plain_column:
+                    return cls.first_name
+                elif exprtype.self_standing_case:
+                    return case(
+                        (column("x") == 1, column("q")),
+                        else_=column("q"),
+                    )
+                elif exprtype.case_w_columns:
+                    return case(
+                        (column("x") == 1, column("q")),
+                        else_=cls.first_name,
+                    )
+                else:
+                    exprtype.fail()
+
+        def go1():
+            employees_2 = aliased(Employees, name="employees_2")
+            stmt = select(employees_2.name)
+            return stmt
+
+        def go2():
+            employees_2 = aliased(Employees, name="employees_2")
+            stmt = select(employees_2)
+            return stmt
+
+        self._run_cache_key_fixture(
+            lambda: stmt_20(go1(), go2()),
+            compare_values=True,
+        )
+
 
 class RoundTripTest(QueryTest, AssertsCompiledSQL):
     __dialect__ = "default"
@@ -716,7 +851,7 @@ class RoundTripTest(QueryTest, AssertsCompiledSQL):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -726,7 +861,7 @@ class RoundTripTest(QueryTest, AssertsCompiledSQL):
             },
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
@@ -885,3 +1020,155 @@ class RoundTripTest(QueryTest, AssertsCompiledSQL):
             go()
 
         eq_(len(cache), lc)
+
+
+class CompositeTest(fixtures.MappedTest):
+    __dialect__ = "default"
+
+    @classmethod
+    def define_tables(cls, metadata):
+        Table(
+            "edges",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("x1", Integer),
+            Column("y1", Integer),
+            Column("x2", Integer),
+            Column("y2", Integer),
+        )
+
+    @classmethod
+    def setup_mappers(cls):
+        edges = cls.tables.edges
+
+        class Point(cls.Comparable):
+            def __init__(self, x, y):
+                self.x = x
+                self.y = y
+
+            def __composite_values__(self):
+                return [self.x, self.y]
+
+            __hash__ = None
+
+            def __eq__(self, other):
+                return (
+                    isinstance(other, Point)
+                    and other.x == self.x
+                    and other.y == self.y
+                )
+
+            def __ne__(self, other):
+                return not isinstance(other, Point) or not self.__eq__(other)
+
+        class Edge(cls.Comparable):
+            def __init__(self, *args):
+                if args:
+                    self.start, self.end = args
+
+        cls.mapper_registry.map_imperatively(
+            Edge,
+            edges,
+            properties={
+                "start": sa.orm.composite(Point, edges.c.x1, edges.c.y1),
+                "end": sa.orm.composite(Point, edges.c.x2, edges.c.y2),
+            },
+        )
+
+    def test_bulk_update_cache_key(self):
+        """test secondary issue located as part of #7209"""
+        Edge, Point = (self.classes.Edge, self.classes.Point)
+
+        stmt = (
+            update(Edge)
+            .filter(Edge.start == Point(14, 5))
+            .values({Edge.end: Point(16, 10)})
+        )
+        stmt2 = (
+            update(Edge)
+            .filter(Edge.start == Point(14, 5))
+            .values({Edge.end: Point(17, 8)})
+        )
+
+        eq_(stmt._generate_cache_key(), stmt2._generate_cache_key())
+
+
+class EmbeddedSubqTest(_RemoveListeners, DeclarativeMappedTest):
+    """test #8790.
+
+    it's expected that cache key structures will change, this test is here
+    testing something fairly similar to the issue we had (though vastly
+    smaller scale) so we mostly want to look for surprise jumps here.
+
+    """
+
+    @classmethod
+    def setup_classes(cls):
+        Base = cls.DeclarativeBasic
+
+        class Employee(ConcreteBase, Base):
+            __tablename__ = "employee"
+            id = Column(Integer, primary_key=True)
+            name = Column(String(50))
+
+            __mapper_args__ = {
+                "polymorphic_identity": "employee",
+                "concrete": True,
+            }
+
+        class Manager(Employee):
+            __tablename__ = "manager"
+            id = Column(Integer, primary_key=True)
+            name = Column(String(50))
+            manager_data = Column(String(40))
+
+            __mapper_args__ = {
+                "polymorphic_identity": "manager",
+                "concrete": True,
+            }
+
+        class Engineer(Employee):
+            __tablename__ = "engineer"
+            id = Column(Integer, primary_key=True)
+            name = Column(String(50))
+            engineer_info = Column(String(40))
+
+            __mapper_args__ = {
+                "polymorphic_identity": "engineer",
+                "concrete": True,
+            }
+
+        Base.registry.configure()
+
+    @testing.combinations(
+        "tuples", ("memory", testing.requires.is64bit), argnames="assert_on"
+    )
+    def test_cache_key_gen(self, assert_on):
+        Employee = self.classes.Employee
+
+        e1 = aliased(Employee)
+        e2 = aliased(Employee)
+
+        subq = select(e1).union_all(select(e2)).subquery()
+
+        anno = aliased(Employee, subq)
+
+        stmt = select(anno)
+
+        ck = stmt._generate_cache_key()
+
+        if assert_on == "tuples":
+            # before the fix for #8790 this was 700
+            int_within_variance(142, count_cache_key_tuples(ck), 0.05)
+
+        elif assert_on == "memory":
+            # before the fix for #8790 this was 55154
+
+            if util.py312:
+                testing.skip_test("python platform not available")
+            elif util.py311:
+                int_within_variance(39996, total_size(ck), 0.05)
+            elif util.py310:
+                int_within_variance(29796, total_size(ck), 0.05)
+            else:
+                testing.skip_test("python platform not available")

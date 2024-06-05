@@ -4,7 +4,10 @@ import pickle
 from sqlalchemy import event
 from sqlalchemy import ForeignKey
 from sqlalchemy import func
+from sqlalchemy import inspect
 from sqlalchemy import Integer
+from sqlalchemy import JSON
+from sqlalchemy import select
 from sqlalchemy import String
 from sqlalchemy import testing
 from sqlalchemy import util
@@ -15,7 +18,8 @@ from sqlalchemy.ext.mutable import MutableSet
 from sqlalchemy.orm import attributes
 from sqlalchemy.orm import column_property
 from sqlalchemy.orm import composite
-from sqlalchemy.orm import mapper
+from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import Session
 from sqlalchemy.orm.instrumentation import ClassManager
 from sqlalchemy.orm.mapper import Mapper
 from sqlalchemy.testing import assert_raises
@@ -23,6 +27,7 @@ from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
+from sqlalchemy.testing import is_true
 from sqlalchemy.testing import mock
 from sqlalchemy.testing.fixtures import fixture_session
 from sqlalchemy.testing.schema import Column
@@ -38,6 +43,10 @@ class Foo(fixtures.BasicEntity):
 
 
 class SubFoo(Foo):
+    pass
+
+
+class Foo2(fixtures.BasicEntity):
     pass
 
 
@@ -102,13 +111,108 @@ class _MutableDictTestFixture(object):
         ClassManager.dispatch._clear()
 
 
+class MiscTest(fixtures.TestBase):
+    @testing.combinations(True, False, argnames="pickleit")
+    def test_pickle_parent_multi_attrs(self, registry, connection, pickleit):
+        """test #8133"""
+
+        local_foo = Table(
+            "lf",
+            registry.metadata,
+            Column("id", Integer, primary_key=True),
+            Column("j1", MutableDict.as_mutable(PickleType)),
+            Column("j2", MutableDict.as_mutable(PickleType)),
+            Column("j3", MutableDict.as_mutable(PickleType)),
+            Column("j4", MutableDict.as_mutable(PickleType)),
+        )
+
+        registry.map_imperatively(Foo2, local_foo)
+        registry.metadata.create_all(connection)
+
+        with Session(connection) as sess:
+
+            data = dict(
+                j1={"a": 1},
+                j2={"b": 2},
+                j3={"c": 3},
+                j4={"d": 4},
+            )
+            lf = Foo2(**data)
+            sess.add(lf)
+            sess.commit()
+
+        all_attrs = {"j1", "j2", "j3", "j4"}
+        for attr in all_attrs:
+            for loads, dumps in picklers():
+                with Session(connection) as sess:
+                    f1 = sess.scalars(select(Foo2)).first()
+                    if pickleit:
+                        f2 = loads(dumps(f1))
+                    else:
+                        f2 = f1
+
+                existing_dict = getattr(f2, attr)
+                existing_dict["q"] = "c"
+                eq_(
+                    inspect(f2).attrs[attr].history,
+                    ([existing_dict], (), ()),
+                )
+                for other_attr in all_attrs.difference([attr]):
+                    a = inspect(f2).attrs[other_attr].history
+                    b = ((), [data[other_attr]], ())
+                    eq_(a, b)
+
+    @testing.combinations("key_present", "key_non_present", argnames="present")
+    @testing.combinations(
+        ("transient", True),
+        ("detached", True),
+        ("detached", False),
+        argnames="merge_subject, load",
+    )
+    @testing.requires.json_type
+    def test_session_merge(
+        self, decl_base, connection, present, load, merge_subject
+    ):
+        """test #8446"""
+
+        class Thing(decl_base):
+            __tablename__ = "thing"
+            id = Column(Integer, primary_key=True)
+            data = Column(MutableDict.as_mutable(JSON))
+
+        decl_base.metadata.create_all(connection)
+
+        with Session(connection) as sess:
+            sess.add(Thing(id=1, data={"foo": "bar"}))
+            sess.commit()
+
+        if merge_subject == "transient":
+            t1_to_merge = Thing(id=1, data={"foo": "bar"})
+        elif merge_subject == "detached":
+            with Session(connection) as sess:
+                t1_to_merge = sess.get(Thing, 1)
+
+        with Session(connection) as sess:
+            already_present = None
+            if present == "key_present":
+                already_present = sess.get(Thing, 1)
+
+            t1_merged = sess.merge(t1_to_merge, load=load)
+
+            t1_merged.data["foo"] = "bat"
+            if present == "key_present":
+                is_(t1_merged, already_present)
+
+            is_true(inspect(t1_merged).attrs.data.history.added)
+
+
 class _MutableDictTestBase(_MutableDictTestFixture):
     run_define_tables = "each"
 
     def setup_mappers(cls):
         foo = cls.tables.foo
 
-        mapper(Foo, foo)
+        cls.mapper_registry.map_imperatively(Foo, foo)
 
     def test_coerce_none(self):
         sess = fixture_session()
@@ -329,7 +433,7 @@ class _MutableListTestBase(_MutableListTestFixture):
     def setup_mappers(cls):
         foo = cls.tables.foo
 
-        mapper(Foo, foo)
+        cls.mapper_registry.map_imperatively(Foo, foo)
 
     def test_coerce_none(self):
         sess = fixture_session()
@@ -635,7 +739,7 @@ class _MutableSetTestBase(_MutableSetTestFixture):
     def setup_mappers(cls):
         foo = cls.tables.foo
 
-        mapper(Foo, foo)
+        cls.mapper_registry.map_imperatively(Foo, foo)
 
     def test_coerce_none(self):
         sess = fixture_session()
@@ -925,7 +1029,7 @@ class MutableColumnDefaultTest(_MutableDictTestFixture, fixtures.MappedTest):
     def setup_mappers(cls):
         foo = cls.tables.foo
 
-        mapper(Foo, foo)
+        cls.mapper_registry.map_imperatively(Foo, foo)
 
     def test_evt_on_flush_refresh(self):
         # test for #3427
@@ -1004,7 +1108,6 @@ class MutableColumnCopyJSONTest(_MutableDictTestBase, fixtures.MappedTest):
     @classmethod
     def define_tables(cls, metadata):
         import json
-        from sqlalchemy.ext.declarative import declarative_base
 
         class JSONEncodedDict(TypeDecorator):
             impl = VARCHAR(50)
@@ -1052,7 +1155,6 @@ class MutableColumnCopyArrayTest(_MutableListTestBase, fixtures.MappedTest):
 
     @classmethod
     def define_tables(cls, metadata):
-        from sqlalchemy.ext.declarative import declarative_base
         from sqlalchemy.sql.sqltypes import ARRAY
 
         MutableList = cls._type_fixture()
@@ -1134,8 +1236,8 @@ class MutableAssocWithAttrInheritTest(
         foo = cls.tables.foo
         subfoo = cls.tables.subfoo
 
-        mapper(Foo, foo)
-        mapper(SubFoo, subfoo, inherits=Foo)
+        cls.mapper_registry.map_imperatively(Foo, foo)
+        cls.mapper_registry.map_imperatively(SubFoo, subfoo, inherits=Foo)
         MutableDict.associate_with_attribute(Foo.data)
 
     def test_in_place_mutation(self):
@@ -1333,7 +1435,7 @@ class MutableCompositeColumnDefaultTest(
 
         cls.Point = cls._type_fixture()
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Foo,
             foo,
             properties={"data": composite(cls.Point, foo.c.x, foo.c.y)},
@@ -1360,7 +1462,7 @@ class MutableCompositesUnpickleTest(_CompositeTestBase, fixtures.MappedTest):
 
         cls.Point = cls._type_fixture()
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             FooWithEq,
             foo,
             properties={"data": composite(cls.Point, foo.c.x, foo.c.y)},
@@ -1379,7 +1481,7 @@ class MutableCompositesTest(_CompositeTestBase, fixtures.MappedTest):
 
         Point = cls._type_fixture()
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Foo, foo, properties={"data": composite(Point, foo.c.x, foo.c.y)}
         )
 
@@ -1490,7 +1592,7 @@ class MutableCompositeCallableTest(_CompositeTestBase, fixtures.MappedTest):
 
         # in this case, this is not actually a MutableComposite.
         # so we don't expect it to track changes
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Foo,
             foo,
             properties={
@@ -1524,7 +1626,7 @@ class MutableCompositeCustomCoerceTest(
 
         Point = cls._type_fixture()
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Foo, foo, properties={"data": composite(Point, foo.c.x, foo.c.y)}
         )
 
@@ -1569,10 +1671,10 @@ class MutableInheritedCompositesTest(_CompositeTestBase, fixtures.MappedTest):
 
         Point = cls._type_fixture()
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Foo, foo, properties={"data": composite(Point, foo.c.x, foo.c.y)}
         )
-        mapper(SubFoo, subfoo, inherits=Foo)
+        cls.mapper_registry.map_imperatively(SubFoo, subfoo, inherits=Foo)
 
     def test_in_place_mutation_subclass(self):
         sess = fixture_session()

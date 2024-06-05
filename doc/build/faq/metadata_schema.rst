@@ -60,9 +60,9 @@ How can I sort Table objects in order of their dependency?
 
 This is available via the :attr:`_schema.MetaData.sorted_tables` function::
 
-    metadata = MetaData()
+    metadata_obj = MetaData()
     # ... add Table objects to metadata
-    ti = metadata.sorted_tables:
+    ti = metadata_obj.sorted_tables:
     for t in ti:
         print(t)
 
@@ -88,10 +88,13 @@ metadata creation sequence as a string, using this recipe::
 
     from sqlalchemy import create_mock_engine
 
+
     def dump(sql, *multiparams, **params):
         print(sql.compile(dialect=engine.dialect))
-    engine = create_mock_engine('postgresql://', dump)
-    metadata.create_all(engine, checkfirst=False)
+
+
+    engine = create_mock_engine("postgresql://", dump)
+    metadata_obj.create_all(engine, checkfirst=False)
 
 The `Alembic <https://alembic.sqlalchemy.org>`_ tool also supports
 an "offline" SQL generation mode that renders database migrations as SQL scripts.

@@ -20,14 +20,7 @@ Following is the full interface for the :class:`_query.Query` object.
 
 .. autoclass:: sqlalchemy.orm.Query
    :members:
-
-   .. automethod:: sqlalchemy.orm.Query.prefix_with
-
-   .. automethod:: sqlalchemy.orm.Query.suffix_with
-
-   .. automethod:: sqlalchemy.orm.Query.with_hint
-
-   .. automethod:: sqlalchemy.orm.Query.with_statement_hint
+   :inherited-members:
 
 ORM-Specific Query Constructs
 =============================
@@ -43,6 +36,7 @@ ORM-Specific Query Constructs
 
 .. autoclass:: sqlalchemy.orm.Load
     :members:
+    :noindex:
 
 .. autofunction:: sqlalchemy.orm.with_loader_criteria
 

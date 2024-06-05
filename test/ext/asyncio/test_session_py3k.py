@@ -11,15 +11,20 @@ from sqlalchemy import testing
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import async_object_session
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import exc as async_exc
 from sqlalchemy.ext.asyncio.base import ReversibleProxy
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.testing import async_test
 from sqlalchemy.testing import engines
 from sqlalchemy.testing import eq_
+from sqlalchemy.testing import expect_raises_message
 from sqlalchemy.testing import is_
+from sqlalchemy.testing import is_true
 from sqlalchemy.testing import mock
+from sqlalchemy.testing.assertions import is_false
 from .test_engine_py3k import AsyncFixture as _AsyncFixture
 from ...orm import _fixtures
 
@@ -65,7 +70,10 @@ class AsyncSessionTest(AsyncFixture):
 
 class AsyncSessionQueryTest(AsyncFixture):
     @async_test
-    async def test_execute(self, async_session):
+    @testing.combinations(
+        {}, dict(execution_options={"logging_token": "test"}), argnames="kw"
+    )
+    async def test_execute(self, async_session, kw):
         User = self.classes.User
 
         stmt = (
@@ -74,7 +82,7 @@ class AsyncSessionQueryTest(AsyncFixture):
             .order_by(User.id)
         )
 
-        result = await async_session.execute(stmt)
+        result = await async_session.execute(stmt, **kw)
         eq_(result.scalars().all(), self.static.user_address_result)
 
     @async_test
@@ -85,6 +93,25 @@ class AsyncSessionQueryTest(AsyncFixture):
 
         result = await async_session.scalar(stmt)
         eq_(result, 7)
+
+    @testing.combinations(
+        ("scalars",), ("stream_scalars",), argnames="filter_"
+    )
+    @async_test
+    async def test_scalars(self, async_session, filter_):
+        User = self.classes.User
+
+        stmt = (
+            select(User)
+            .options(selectinload(User.addresses))
+            .order_by(User.id)
+        )
+
+        if filter_ == "scalars":
+            result = (await async_session.scalars(stmt)).all()
+        elif filter_ == "stream_scalars":
+            result = await (await async_session.stream_scalars(stmt)).all()
+        eq_(result, self.static.user_address_result)
 
     @async_test
     async def test_get(self, async_session):
@@ -102,8 +129,22 @@ class AsyncSessionQueryTest(AsyncFixture):
         is_(u3, None)
 
     @async_test
+    async def test_get_loader_options(self, async_session):
+        User = self.classes.User
+
+        u = await async_session.get(
+            User, 7, options=[selectinload(User.addresses)]
+        )
+
+        eq_(u.name, "jack")
+        eq_(len(u.__dict__["addresses"]), 1)
+
+    @async_test
     @testing.requires.independent_cursors
-    async def test_stream_partitions(self, async_session):
+    @testing.combinations(
+        {}, dict(execution_options={"logging_token": "test"}), argnames="kw"
+    )
+    async def test_stream_partitions(self, async_session, kw):
         User = self.classes.User
 
         stmt = (
@@ -112,7 +153,7 @@ class AsyncSessionQueryTest(AsyncFixture):
             .order_by(User.id)
         )
 
-        result = await async_session.stream(stmt)
+        result = await async_session.stream(stmt, **kw)
 
         assert_result = []
         async for partition in result.scalars().partitions(3):
@@ -125,6 +166,28 @@ class AsyncSessionQueryTest(AsyncFixture):
                 self.static.user_address_result[3:],
             ],
         )
+
+    @testing.combinations("statement", "execute", argnames="location")
+    @async_test
+    async def test_no_ss_cursor_w_execute(self, async_session, location):
+        User = self.classes.User
+
+        stmt = select(User)
+        if location == "statement":
+            stmt = stmt.execution_options(stream_results=True)
+
+        with expect_raises_message(
+            async_exc.AsyncMethodRequired,
+            r"Can't use the AsyncSession.execute\(\) method with a "
+            r"server-side cursor. Use the AsyncSession.stream\(\) "
+            r"method for an async streaming result set.",
+        ):
+            if location == "execute":
+                await async_session.execute(
+                    stmt, execution_options={"stream_results": True}
+                )
+            else:
+                await async_session.execute(stmt)
 
 
 class AsyncSessionTransactionTest(AsyncFixture):
@@ -328,6 +391,28 @@ class AsyncSessionTransactionTest(AsyncFixture):
             eq_(u1.name, "new u1")
 
     @async_test
+    async def test_merge_loader_options(self, async_session):
+        User = self.classes.User
+        Address = self.classes.Address
+
+        async with async_session.begin():
+            u1 = User(id=1, name="u1", addresses=[Address(email_address="e1")])
+
+            async_session.add(u1)
+
+        await async_session.close()
+
+        async with async_session.begin():
+            new_u1 = User(id=1, name="new u1")
+
+            new_u_merged = await async_session.merge(
+                new_u1, options=[selectinload(User.addresses)]
+            )
+
+            eq_(new_u_merged.name, "new u1")
+            eq_(len(new_u_merged.__dict__["addresses"]), 1)
+
+    @async_test
     async def test_join_to_external_transaction(self, async_engine):
         User = self.classes.User
 
@@ -427,6 +512,22 @@ class AsyncSessionTransactionTest(AsyncFixture):
         async with AsyncSession(async_engine) as async_session:
             result = await async_session.execute(select(User))
             eq_(result.all(), [])
+
+    @async_test
+    @testing.requires.independent_connections
+    async def test_invalidate(self, async_session):
+        await async_session.execute(select(1))
+        conn = async_session.sync_session.connection()
+        fairy = conn.connection
+        connection_rec = fairy._connection_record
+
+        is_false(conn.closed)
+        is_false(connection_rec._is_hard_or_soft_invalidated())
+        await async_session.invalidate()
+        is_true(conn.closed)
+        is_true(connection_rec._is_hard_or_soft_invalidated())
+
+        eq_(async_session.in_transaction(), False)
 
 
 class AsyncCascadesTest(AsyncFixture):
@@ -574,12 +675,10 @@ class AsyncEventTest(AsyncFixture):
 
     @async_test
     async def test_no_async_listeners(self, async_session):
-        with testing.expect_raises(
+        with testing.expect_raises_message(
             NotImplementedError,
-            "NotImplementedError: asynchronous events are not implemented "
-            "at this time.  Apply synchronous listeners to the "
-            "AsyncEngine.sync_engine or "
-            "AsyncConnection.sync_connection attributes.",
+            "asynchronous events are not implemented at this time.  "
+            "Apply synchronous listeners to the AsyncSession.sync_session.",
         ):
             event.listen(async_session, "before_flush", mock.Mock())
 
@@ -607,6 +706,17 @@ class AsyncProxyTest(AsyncFixture):
 
         is_(c1, c2)
         is_(c1.engine, c2.engine)
+
+    @async_test
+    async def test_get_connection_kws(self, async_session):
+        c1 = await async_session.connection(
+            execution_options={"isolation_level": "AUTOCOMMIT"}
+        )
+
+        eq_(
+            c1.sync_connection._execution_options,
+            {"isolation_level": "AUTOCOMMIT"},
+        )
 
     @async_test
     async def test_get_connection_connection_bound(self, async_engine):
@@ -718,8 +828,6 @@ class AsyncProxyTest(AsyncFixture):
         is_(inspect(u3).async_session, None)
 
     def test_inspect_session_no_asyncio_used(self):
-        from sqlalchemy.orm import Session
-
         User = self.classes.User
 
         s1 = Session(testing.db)
@@ -728,8 +836,6 @@ class AsyncProxyTest(AsyncFixture):
         is_(inspect(u1).async_session, None)
 
     def test_inspect_session_no_asyncio_imported(self):
-        from sqlalchemy.orm import Session
-
         with mock.patch("sqlalchemy.orm.state._async_provider", None):
 
             User = self.classes.User
@@ -752,3 +858,47 @@ class AsyncProxyTest(AsyncFixture):
         del async_session
 
         eq_(len(ReversibleProxy._proxy_objects), 0)
+
+
+class _MySession(Session):
+    pass
+
+
+class _MyAS(AsyncSession):
+    sync_session_class = _MySession
+
+
+class OverrideSyncSession(AsyncFixture):
+    def test_default(self, async_engine):
+        ass = AsyncSession(async_engine)
+
+        is_true(isinstance(ass.sync_session, Session))
+        is_(ass.sync_session.__class__, Session)
+        is_(ass.sync_session_class, Session)
+
+    def test_init_class(self, async_engine):
+        ass = AsyncSession(async_engine, sync_session_class=_MySession)
+
+        is_true(isinstance(ass.sync_session, _MySession))
+        is_(ass.sync_session_class, _MySession)
+
+    def test_init_sessionmaker(self, async_engine):
+        sm = sessionmaker(
+            async_engine, class_=AsyncSession, sync_session_class=_MySession
+        )
+        ass = sm()
+
+        is_true(isinstance(ass.sync_session, _MySession))
+        is_(ass.sync_session_class, _MySession)
+
+    def test_subclass(self, async_engine):
+        ass = _MyAS(async_engine)
+
+        is_true(isinstance(ass.sync_session, _MySession))
+        is_(ass.sync_session_class, _MySession)
+
+    def test_subclass_override(self, async_engine):
+        ass = _MyAS(async_engine, sync_session_class=Session)
+
+        is_true(not isinstance(ass.sync_session, _MySession))
+        is_(ass.sync_session_class, Session)

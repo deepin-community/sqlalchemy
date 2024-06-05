@@ -9,7 +9,6 @@ from sqlalchemy import testing
 from sqlalchemy import update
 from sqlalchemy.future import select
 from sqlalchemy.orm import aliased
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm import Session
@@ -44,7 +43,7 @@ class LambdaTest(QueryTest, AssertsCompiledSQL):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -52,7 +51,7 @@ class LambdaTest(QueryTest, AssertsCompiledSQL):
             },
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
@@ -220,7 +219,7 @@ class LambdaTest(QueryTest, AssertsCompiledSQL):
 
         assert_raises_message(
             exc.ArgumentError,
-            "Cacheable Core or ORM object expected, got",
+            "ExecutionOption Core or ORM object expected, got",
             select(lambda: User).options,
             lambda: subqueryload(User.addresses),
         )
@@ -305,26 +304,6 @@ class LambdaTest(QueryTest, AssertsCompiledSQL):
                 r"decreasing the efficiency of caching"
             ):
                 self.assert_sql_count(testing.db, fn, 2)
-
-    def test_does_filter_aliasing_work(self, plain_fixture):
-        User, Address = plain_fixture
-
-        s = Session(testing.db, future=True)
-
-        # aliased=True is to be deprecated, other filter lambdas
-        # that go into effect include polymorphic filtering.
-        q = (
-            s.query(lambda: User)
-            .join(lambda: User.addresses, aliased=True)
-            .filter(lambda: Address.email_address == "foo")
-        )
-        self.assert_compile(
-            q,
-            "SELECT users.id AS users_id, users.name AS users_name "
-            "FROM users JOIN addresses AS addresses_1 "
-            "ON users.id = addresses_1.user_id "
-            "WHERE addresses_1.email_address = :email_address_1",
-        )
 
     @testing.combinations(
         lambda s, User, Address: s.query(lambda: User).join(lambda: Address),
@@ -444,7 +423,7 @@ class UpdateDeleteTest(fixtures.MappedTest):
         Address = cls.classes.Address
         addresses = cls.tables.addresses
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -452,7 +431,7 @@ class UpdateDeleteTest(fixtures.MappedTest):
                 "addresses": relationship(Address),
             },
         )
-        mapper(Address, addresses)
+        cls.mapper_registry.map_imperatively(Address, addresses)
 
     def test_update(self):
         User, Address = self.classes("User", "Address")

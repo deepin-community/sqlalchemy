@@ -5,10 +5,13 @@ from sqlalchemy.engine.row import Row
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import eq_
+from sqlalchemy.testing import expect_deprecated
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_false
 from sqlalchemy.testing import is_true
+from sqlalchemy.testing.assertions import expect_raises
 from sqlalchemy.testing.util import picklers
+from sqlalchemy.util import compat
 
 
 class ResultTupleTest(fixtures.TestBase):
@@ -65,7 +68,12 @@ class ResultTupleTest(fixtures.TestBase):
     def test_slices_arent_in_mappings(self):
         keyed_tuple = self._fixture([1, 2], ["a", "b"])
 
-        assert_raises(TypeError, lambda: keyed_tuple._mapping[0:2])
+        if compat.py312:
+            with expect_raises(KeyError):
+                keyed_tuple._mapping[0:2]
+        else:
+            with expect_raises(TypeError):
+                keyed_tuple._mapping[0:2]
 
     def test_integers_arent_in_mappings(self):
         keyed_tuple = self._fixture([1, 2], ["a", "b"])
@@ -222,6 +230,21 @@ class ResultTest(fixtures.TestBase):
             res._process_row = alt_row
 
         return res
+
+    def test_close_attributes(self):
+        """test #8710"""
+        r1 = self._fixture()
+
+        is_false(r1.closed)
+        is_false(r1._soft_closed)
+
+        r1._soft_close()
+        is_false(r1.closed)
+        is_true(r1._soft_closed)
+
+        r1.close()
+        is_true(r1.closed)
+        is_true(r1._soft_closed)
 
     def test_class_presented(self):
         """To support different kinds of objects returned vs. rows,
@@ -484,7 +507,12 @@ class ResultTest(fixtures.TestBase):
         row = result.first()
         eq_(row, (1, 1, 1))
 
-        eq_(result.all(), [])
+        # note this is a behavior change in 1.4.27 due to
+        # adding a real result.close() to Result, previously this would
+        # return an empty list.  this is already the
+        # behavior with CursorResult, but was mis-implemented for
+        # other non-cursor result sets.
+        assert_raises(exc.ResourceClosedError, result.all)
 
     def test_one_unique(self):
         # assert that one() counts rows after uniqueness has been applied.
@@ -597,7 +625,12 @@ class ResultTest(fixtures.TestBase):
 
         eq_(result.scalar(), 1)
 
-        eq_(result.all(), [])
+        # note this is a behavior change in 1.4.27 due to
+        # adding a real result.close() to Result, previously this would
+        # return an empty list.  this is already the
+        # behavior with CursorResult, but was mis-implemented for
+        # other non-cursor result sets.
+        assert_raises(exc.ResourceClosedError, result.all)
 
     def test_partition(self):
         result = self._fixture()
@@ -1044,10 +1077,47 @@ class OnlyScalarsTest(fixtures.TestBase):
             metadata, no_tuple_fixture, source_supports_scalars=True
         )
 
-        r = r.columns(0).mappings()
+        with expect_deprecated(
+            r"The Result.columns\(\) method has a bug in SQLAlchemy 1.4 "
+            r"that is causing it to yield scalar values"
+        ):
+            r = r.columns(0).mappings()
         eq_(
             list(r),
             [{"a": 1}, {"a": 2}, {"a": 1}, {"a": 1}, {"a": 4}],
+        )
+
+    def test_scalar_mode_columns0_plain(self, no_tuple_fixture):
+        """test #7953"""
+
+        metadata = result.SimpleResultMetaData(["a", "b", "c"])
+
+        r = result.ChunkedIteratorResult(
+            metadata, no_tuple_fixture, source_supports_scalars=True
+        )
+
+        with expect_deprecated(
+            r"The Result.columns\(\) method has a bug in SQLAlchemy 1.4 "
+            r"that is causing it to yield scalar values"
+        ):
+            r = r.columns(0)
+        eq_(
+            list(r),
+            [1, 2, 1, 1, 4],
+            # [(1,), (2,), (1,), (1,), (4,)],  # correct result
+        )
+
+    def test_scalar_mode_scalars0(self, no_tuple_fixture):
+        metadata = result.SimpleResultMetaData(["a", "b", "c"])
+
+        r = result.ChunkedIteratorResult(
+            metadata, no_tuple_fixture, source_supports_scalars=True
+        )
+
+        r = r.scalars(0)
+        eq_(
+            list(r),
+            [1, 2, 1, 1, 4],
         )
 
     def test_scalar_mode_but_accessed_nonscalar_result(self, no_tuple_fixture):

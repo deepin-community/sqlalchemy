@@ -6,6 +6,7 @@ from sqlalchemy import bindparam
 from sqlalchemy import Column
 from sqlalchemy import desc
 from sqlalchemy import exc
+from sqlalchemy import extract
 from sqlalchemy import Float
 from sqlalchemy import func
 from sqlalchemy import Integer
@@ -31,6 +32,7 @@ from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
+from sqlalchemy.testing.assertions import expect_raises_message
 from sqlalchemy.types import NullType
 
 table1 = table(
@@ -179,6 +181,14 @@ class SelectCompositionTest(fixtures.TestBase, AssertsCompiledSQL):
             .select_from(text("(select f from bar where lala=heyhey) foo")),
             "SELECT t.myid, t.name, t.description, foo.f FROM mytable AS t, "
             "(select f from bar where lala=heyhey) foo WHERE foo.f = t.id",
+        )
+
+    def test_expression_element_role(self):
+        """test #7287"""
+
+        self.assert_compile(
+            extract("year", text("some_date + :param")),
+            "EXTRACT(year FROM some_date + :param)",
         )
 
     @testing.combinations(
@@ -812,6 +822,15 @@ class OrderByLabelResolutionTest(fixtures.TestBase, AssertsCompiledSQL):
         self.assert_compile(
             stmt, "SELECT mytable.myid AS foo FROM mytable ORDER BY foo"
         )
+
+    def test_no_order_by_text(self):
+        stmt = select(text("foo")).order_by("foo")
+
+        with expect_raises_message(
+            exc.CompileError,
+            r"Can't resolve label reference for ORDER BY / GROUP BY / ",
+        ):
+            stmt.compile()
 
     def test_order_by_colname(self):
         stmt = select(table1.c.myid).order_by("name")

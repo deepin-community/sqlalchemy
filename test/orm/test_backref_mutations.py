@@ -13,7 +13,6 @@ from sqlalchemy import testing
 from sqlalchemy import text
 from sqlalchemy.orm import attributes
 from sqlalchemy.orm import backref
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Session
 from sqlalchemy.testing import eq_
@@ -34,8 +33,8 @@ class O2MCollectionTest(_fixtures.FixtureTest):
             cls.classes.User,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        cls.mapper_registry.map_imperatively(Address, addresses)
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(addresses=relationship(Address, backref="user")),
@@ -44,7 +43,7 @@ class O2MCollectionTest(_fixtures.FixtureTest):
     def test_collection_move_hitslazy(self):
         User, Address = self.classes.User, self.classes.Address
 
-        sess = fixture_session()
+        sess = fixture_session(future=True)
         a1 = Address(email_address="address1")
         a2 = Address(email_address="address2")
         a3 = Address(email_address="address3")
@@ -397,8 +396,8 @@ class O2OScalarBackrefMoveTest(_fixtures.FixtureTest):
             cls.classes.User,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        cls.mapper_registry.map_imperatively(Address, addresses)
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -596,8 +595,8 @@ class O2OScalarMoveTest(_fixtures.FixtureTest):
             cls.classes.User,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        cls.mapper_registry.map_imperatively(Address, addresses)
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -648,8 +647,8 @@ class O2OScalarOrphanTest(_fixtures.FixtureTest):
             cls.classes.User,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        cls.mapper_registry.map_imperatively(Address, addresses)
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -668,7 +667,7 @@ class O2OScalarOrphanTest(_fixtures.FixtureTest):
     def test_m2o_event(self):
         User, Address = self.classes.User, self.classes.Address
 
-        sess = fixture_session()
+        sess = fixture_session(future=True)
         a1 = Address(email_address="address1")
         u1 = User(name="jack", address=a1)
 
@@ -679,6 +678,7 @@ class O2OScalarOrphanTest(_fixtures.FixtureTest):
         u2 = User(name="ed")
         # the _SingleParent extension sets the backref get to "active" !
         # u1 gets loaded and deleted
+        sess.add(u2)
         u2.address = a1
         sess.commit()
         assert sess.query(User).count() == 1
@@ -697,7 +697,7 @@ class M2MCollectionMoveTest(_fixtures.FixtureTest):
             cls.classes.Item,
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Item,
             items,
             properties={
@@ -706,14 +706,14 @@ class M2MCollectionMoveTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Keyword, keywords)
+        cls.mapper_registry.map_imperatively(Keyword, keywords)
 
     def test_add_remove_pending_backref(self):
         """test that pending doesn't add an item that's not a net add."""
 
         Item, Keyword = (self.classes.Item, self.classes.Keyword)
 
-        session = fixture_session(autoflush=False)
+        session = fixture_session(autoflush=False, future=True)
 
         i1 = Item(description="i1")
         session.add(i1)
@@ -834,7 +834,7 @@ class M2MScalarMoveTest(_fixtures.FixtureTest):
             cls.classes.Item,
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Item,
             items,
             properties={
@@ -846,7 +846,7 @@ class M2MScalarMoveTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Keyword, keywords)
+        cls.mapper_registry.map_imperatively(Keyword, keywords)
 
     def test_collection_move_preloaded(self):
         Item, Keyword = self.classes.Item, self.classes.Keyword
@@ -926,8 +926,8 @@ class O2MStaleBackrefTest(_fixtures.FixtureTest):
             cls.classes.User,
         )
 
-        mapper(Address, addresses)
-        mapper(
+        cls.mapper_registry.map_imperatively(Address, addresses)
+        cls.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(addresses=relationship(Address, backref="user")),
@@ -962,7 +962,7 @@ class M2MStaleBackrefTest(_fixtures.FixtureTest):
             cls.classes.Item,
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Item,
             items,
             properties={
@@ -971,7 +971,7 @@ class M2MStaleBackrefTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Keyword, keywords)
+        cls.mapper_registry.map_imperatively(Keyword, keywords)
 
     def test_backref_pop_m2m(self):
         Keyword, Item = self.classes.Keyword, self.classes.Item

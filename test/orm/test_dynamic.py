@@ -1,21 +1,25 @@
 from sqlalchemy import cast
+from sqlalchemy import Column
 from sqlalchemy import desc
 from sqlalchemy import exc
+from sqlalchemy import ForeignKey
 from sqlalchemy import func
 from sqlalchemy import inspect
 from sqlalchemy import Integer
 from sqlalchemy import select
+from sqlalchemy import String
 from sqlalchemy import testing
 from sqlalchemy.orm import attributes
 from sqlalchemy.orm import backref
 from sqlalchemy.orm import configure_mappers
 from sqlalchemy.orm import exc as orm_exc
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import noload
 from sqlalchemy.orm import Query
 from sqlalchemy.orm import relationship
+from sqlalchemy.orm.session import make_transient_to_detached
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
+from sqlalchemy.testing import assert_warns_message
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import expect_raises_message
@@ -34,7 +38,7 @@ class _DynamicFixture(object):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -43,7 +47,7 @@ class _DynamicFixture(object):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         return User, Address
 
     def _order_item_fixture(self, items_args={}):
@@ -55,7 +59,7 @@ class _DynamicFixture(object):
             self.classes.Item,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={
@@ -64,7 +68,7 @@ class _DynamicFixture(object):
                 )
             },
         )
-        mapper(Item, items)
+        self.mapper_registry.map_imperatively(Item, items)
         return Order, Item
 
     def _user_order_item_fixture(self):
@@ -92,7 +96,7 @@ class _DynamicFixture(object):
             self.tables.orders,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -101,7 +105,7 @@ class _DynamicFixture(object):
                 )
             },
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={
@@ -110,7 +114,7 @@ class _DynamicFixture(object):
                 ),
             },
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties={
@@ -119,12 +123,14 @@ class _DynamicFixture(object):
                 )  # m2m
             },
         )
-        mapper(Keyword, keywords)
+        self.mapper_registry.map_imperatively(Keyword, keywords)
 
         return User, Order, Item, Keyword
 
 
 class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
+    __dialect__ = "default"
+
     def test_basic(self):
         User, Address = self._user_address_fixture()
         sess = fixture_session()
@@ -237,7 +243,7 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
 
         User, Address = self._user_address_fixture()
         sess = fixture_session()
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
         sess.expunge(u)
         assert_raises(
             orm_exc.DetachedInstanceError,
@@ -254,7 +260,7 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
 
         User, Address = self._user_address_fixture()
         sess = fixture_session()
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
         sess.expunge(u)
 
         with testing.expect_warnings(
@@ -293,12 +299,12 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
             self.tables.addresses,
             self.classes.User,
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={"user": relationship(User, lazy="dynamic")},
         )
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         assert_raises_message(
             exc.InvalidRequestError,
             "On relationship Address.user, 'dynamic' loaders cannot be "
@@ -314,15 +320,15 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
             self.tables.addresses,
             self.classes.User,
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
                 "user": relationship(User, uselist=True, lazy="dynamic")
             },
         )
-        mapper(User, users)
-        assert_raises_message(
+        self.mapper_registry.map_imperatively(User, users)
+        assert_warns_message(
             exc.SAWarning,
             "On relationship Address.user, 'dynamic' loaders cannot be "
             "used with many-to-one/one-to-one relationships and/or "
@@ -333,7 +339,7 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
     def test_order_by(self):
         User, Address = self._user_address_fixture()
         sess = fixture_session()
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
         eq_(
             list(u.addresses.order_by(desc(Address.email_address))),
             [
@@ -351,7 +357,7 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
         )
 
         sess = fixture_session()
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
 
         with self.sql_execution_asserter() as asserter:
             for i in range(3):
@@ -385,7 +391,7 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
         )
 
         sess = fixture_session()
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
         eq_(
             list(u.addresses),
             [
@@ -431,7 +437,7 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={
@@ -440,17 +446,17 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
                 )
             },
         )
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session()
-        ad = sess.query(Address).get(1)
+        ad = sess.get(Address, 1)
 
         def go():
             ad.user = None
 
         self.assert_sql_count(testing.db, go, 0)
         sess.flush()
-        u = sess.query(User).get(7)
+        u = sess.get(User, 7)
         assert ad not in u.addresses
 
     def test_no_count(self):
@@ -548,7 +554,7 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
             self.classes.Item,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={
@@ -560,7 +566,7 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
                 )
             },
         )
-        mapper(Item, items)
+        self.mapper_registry.map_imperatively(Item, items)
 
         sess = fixture_session()
         o = sess.query(Order).first()
@@ -589,7 +595,7 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
             self.classes.Item,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -598,10 +604,16 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
                 )
             },
         )
-        mapper(Item, items)
+        item_mapper = self.mapper_registry.map_imperatively(Item, items)
 
         sess = fixture_session()
+
         u1 = sess.query(User).first()
+
+        dyn = u1.items
+
+        # test for #7868
+        eq_(dyn._from_obj[0]._annotations["parententity"], item_mapper)
 
         self.assert_compile(
             u1.items,
@@ -612,6 +624,62 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
             "WHERE :param_1 = orders.user_id "
             "AND items.id = order_items.item_id",
             use_default_dialect=True,
+        )
+
+    def test_secondary_as_join_complex_entity(self, registry):
+        """integration test for #7868"""
+        Base = registry.generate_base()
+
+        class GrandParent(Base):
+            __tablename__ = "grandparent"
+            id = Column(Integer, primary_key=True)
+
+            grand_children = relationship(
+                "Child", secondary="parent", lazy="dynamic", viewonly=True
+            )
+
+        class Parent(Base):
+            __tablename__ = "parent"
+            id = Column(Integer, primary_key=True)
+            grand_parent_id = Column(
+                Integer, ForeignKey("grandparent.id"), nullable=False
+            )
+
+        class Child(Base):
+            __tablename__ = "child"
+            id = Column(Integer, primary_key=True)
+            type = Column(String)
+            parent_id = Column(
+                Integer, ForeignKey("parent.id"), nullable=False
+            )
+
+            __mapper_args__ = {
+                "polymorphic_on": type,
+                "polymorphic_identity": "unknown",
+                "with_polymorphic": "*",
+            }
+
+        class SubChild(Child):
+            __tablename__ = "subchild"
+            id = Column(Integer, ForeignKey("child.id"), primary_key=True)
+
+            __mapper_args__ = {
+                "polymorphic_identity": "sub",
+            }
+
+        gp = GrandParent(id=1)
+        make_transient_to_detached(gp)
+        sess = fixture_session()
+        sess.add(gp)
+        self.assert_compile(
+            gp.grand_children.filter_by(id=1),
+            "SELECT child.id AS child_id, child.type AS child_type, "
+            "child.parent_id AS child_parent_id, subchild.id AS subchild_id "
+            "FROM parent, child LEFT OUTER JOIN subchild "
+            "ON child.id = subchild.id "
+            "WHERE :param_1 = parent.grand_parent_id "
+            "AND parent.id = child.parent_id AND child.id = :id_1",
+            {"id_1": 1},
         )
 
     def test_secondary_doesnt_interfere_w_join_to_fromlist(self):
@@ -632,7 +700,7 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
         class ItemKeyword(object):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={
@@ -641,12 +709,12 @@ class DynamicTest(_DynamicFixture, _fixtures.FixtureTest, AssertsCompiledSQL):
                 )
             },
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             ItemKeyword,
             item_keywords,
             primary_key=[item_keywords.c.item_id, item_keywords.c.keyword_id],
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties={"item_keywords": relationship(ItemKeyword)},
@@ -709,7 +777,7 @@ class UOWTest(
             ),  # noqa
             0,
         )
-        u1 = sess.query(User).get(u1.id)
+        u1 = sess.get(User, u1.id)
         u1.addresses.append(a1)
         sess.flush()
 
@@ -981,7 +1049,7 @@ class UOWTest(
     def test_self_referential(self):
         Node, nodes = self.classes.Node, self.tables.nodes
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Node,
             nodes,
             properties={

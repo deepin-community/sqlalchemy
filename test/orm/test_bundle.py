@@ -8,7 +8,6 @@ from sqlalchemy import testing
 from sqlalchemy import tuple_
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import Bundle
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ClauseList
@@ -61,12 +60,14 @@ class BundleTest(fixtures.MappedTest, AssertsCompiledSQL):
 
     @classmethod
     def setup_mappers(cls):
-        mapper(
+        cls.mapper_registry.map_imperatively(
             cls.classes.Data,
             cls.tables.data,
             properties={"others": relationship(cls.classes.Other)},
         )
-        mapper(cls.classes.Other, cls.tables.other)
+        cls.mapper_registry.map_imperatively(
+            cls.classes.Other, cls.tables.other
+        )
 
     @classmethod
     def insert_data(cls, connection):
@@ -304,7 +305,7 @@ class BundleTest(fixtures.MappedTest, AssertsCompiledSQL):
 
         stmt = select(b1).filter(b1.c.x.between("d3d1", "d5d1"))
         eq_(
-            sess.execute(stmt).scalars().all(),
+            sess.scalars(stmt).all(),
             [("d3d1", "d3d2"), ("d4d1", "d4d2"), ("d5d1", "d5d2")],
         )
 
@@ -335,7 +336,7 @@ class BundleTest(fixtures.MappedTest, AssertsCompiledSQL):
 
         stmt = select(b1).filter(b1.c.d1.between("d3d1", "d5d1"))
         eq_(
-            sess.execute(stmt).scalars().all(),
+            sess.scalars(stmt).all(),
             [("d3d1", "d3d2"), ("d4d1", "d4d2"), ("d5d1", "d5d2")],
         )
 

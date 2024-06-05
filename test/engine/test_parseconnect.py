@@ -1,9 +1,12 @@
+import copy
+
 import sqlalchemy as tsa
 from sqlalchemy import create_engine
 from sqlalchemy import engine_from_config
 from sqlalchemy import exc
 from sqlalchemy import pool
 from sqlalchemy import testing
+from sqlalchemy import util
 from sqlalchemy.dialects import plugins
 from sqlalchemy.dialects import registry
 from sqlalchemy.engine.default import DefaultDialect
@@ -11,11 +14,14 @@ import sqlalchemy.engine.url as url
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import eq_
+from sqlalchemy.testing import expect_raises_message
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
 from sqlalchemy.testing import is_false
+from sqlalchemy.testing import is_not
 from sqlalchemy.testing import is_true
 from sqlalchemy.testing import mock
+from sqlalchemy.testing.assertions import expect_deprecated
 from sqlalchemy.testing.mock import call
 from sqlalchemy.testing.mock import MagicMock
 from sqlalchemy.testing.mock import Mock
@@ -176,6 +182,17 @@ class URLTest(fixtures.TestBase):
         eq_(u.query, {"arg1=": "param1", "arg2": "param 2"})
         eq_(str(u), test_url)
 
+    def test_query_string_py2_unicode(self):
+        url_str = u"dialect://user:pass@host/?arg1=param1&arg2=param2"
+        if util.py2k:
+            # just to make sure linters / formatters etc. don't erase the
+            # 'u' above
+            assert isinstance(url_str, unicode)  # noqa
+        u = url.make_url(url_str)
+        eq_(u.query, {"arg1": "param1", "arg2": "param2"})
+        eq_(u.database, "")
+        eq_(str(u), "dialect://user:pass@host/?arg1=param1&arg2=param2")
+
     def test_comparison(self):
         common_url = (
             "dbtype://username:password"
@@ -191,6 +208,25 @@ class URLTest(fixtures.TestBase):
         is_false(url1 != url2)
         is_true(url1 != url3)
         is_false(url1 == url3)
+
+    def test_copy(self):
+        url1 = url.make_url(
+            "dialect://user:pass@host/db?arg1%3D=param1&arg2=param+2"
+        )
+        url2 = copy.copy(url1)
+        eq_(url1, url2)
+        is_not(url1, url2)
+
+    def test_deepcopy(self):
+        url1 = url.make_url(
+            "dialect://user:pass@host/db?arg1%3D=param1&arg2=param+2"
+        )
+        url2 = copy.deepcopy(url1)
+        eq_(url1, url2)
+        is_not(url1, url2)
+        is_not(url1.query, url2.query)  # immutabledict of immutable k/v,
+        # but it copies it on constructor
+        # in any case if params are present
 
     @testing.combinations(
         "drivername",
@@ -239,6 +275,17 @@ class URLTest(fixtures.TestBase):
         )
 
     @testing.combinations(
+        "drivername://",
+        "drivername://?foo=bar",
+        "drivername://?foo=bar&foo=bat",
+    )
+    def test_query_dict_immutable(self, urlstr):
+        url_obj = url.make_url(urlstr)
+
+        with expect_raises_message(TypeError, ".*immutable"):
+            url_obj.query["foo"] = "hoho"
+
+    @testing.combinations(
         (
             "foo1=bar1&foo2=bar2",
             "foo2=bar22&foo3=bar3",
@@ -275,19 +322,34 @@ class URLTest(fixtures.TestBase):
             url.make_url("drivername:///?%s" % expected),
         )
 
-    @testing.combinations(
-        "username",
-        "host",
-        "database",
-    )
-    def test_only_str_constructor(self, argname):
+    @testing.combinations("username", "host", "database", argnames="argname")
+    @testing.combinations((35.8), (True,), argnames="value")
+    def test_only_str_constructor(self, argname, value):
         assert_raises_message(
             TypeError,
             "%s must be a string" % argname,
             url.URL.create,
             "somedriver",
-            **{argname: 35.8}
+            **{argname: value}
         )
+
+    @testing.combinations("username", "host", "database", argnames="argname")
+    def test_none_ok(self, argname):
+        u1 = url.URL.create("drivername", **{argname: None})
+        is_(getattr(u1, argname), None)
+
+    @testing.combinations((35.8), (True,), (None,), argnames="value")
+    def test_only_str_drivername_no_none(self, value):
+        assert_raises_message(
+            TypeError, "drivername must be a string", url.URL.create, value
+        )
+
+    @testing.combinations((35.8), (True,), (None,), argnames="value")
+    def test_only_str_drivername_no_none_legacy(self, value):
+        with expect_deprecated(r"Calling URL\(\) directly"):
+            assert_raises_message(
+                TypeError, "drivername must be a string", url.URL, value
+            )
 
     @testing.combinations(
         "username",
@@ -350,6 +412,59 @@ class URLTest(fixtures.TestBase):
                 host="hostname",
             )
         eq_(u1, url.make_url("somedriver://user@hostname:52"))
+
+    def test_deprecated_constructor_all_args(self):
+        """test #7130"""
+        with testing.expect_deprecated(
+            r"Calling URL\(\) directly is deprecated and will be "
+            "disabled in a future release."
+        ):
+            u1 = url.URL(
+                "somedriver",
+                "user",
+                "secret",
+                "10.20.30.40",
+                1234,
+                "DB",
+                {"key": "value"},
+            )
+        eq_(
+            u1,
+            url.make_url(
+                "somedriver://user:secret@10.20.30.40:1234/DB?key=value"
+            ),
+        )
+
+    @testing.requires.python3
+    def test_arg_validation_all_seven_posn(self):
+        """test #7130"""
+        with testing.expect_deprecated(
+            r"Calling URL\(\) directly is deprecated and will be "
+            "disabled in a future release."
+        ):
+
+            assert_raises_message(
+                TypeError,
+                "drivername must be a string",
+                url.URL,
+                b"somedriver",
+                "user",
+                "secret",
+                "10.20.30.40",
+                1234,
+                "DB",
+                {"key": "value"},
+            )
+
+    def test_deprecated_translate_connect_args_names(self):
+        u = url.make_url("somedriver://user@hostname:52")
+
+        with testing.expect_deprecated(
+            "The `URL.translate_connect_args.name`s parameter is "
+        ):
+            res = u.translate_connect_args(["foo"])
+            is_true("foo" in res)
+            eq_(res["foo"], u.host)
 
 
 class DialectImportTest(fixtures.TestBase):
@@ -674,6 +789,43 @@ class CreateEngineTest(fixtures.TestBase):
             module=mock_sqlite_dbapi,
             _initialize=False,
         )
+
+    @testing.combinations(True, False)
+    def test_password_object_str(self, creator):
+        class SecurePassword:
+            def __init__(self, value):
+                self.called = 0
+                self.value = value
+
+            def __str__(self):
+                self.called += 1
+                return self.value
+
+        sp = SecurePassword("secured_password")
+        u = url.URL.create(
+            "postgresql", username="x", password=sp, host="localhost"
+        )
+        if not creator:
+            dbapi = MockDBAPI(
+                user="x", password="secured_password", host="localhost"
+            )
+
+            e = create_engine(u, module=dbapi, _initialize=False)
+
+        else:
+            dbapi = MockDBAPI(foober=12, lala=18, fooz="somevalue")
+
+            def connect():
+                return dbapi.connect(foober=12, lala=18, fooz="somevalue")
+
+            e = create_engine(
+                u, creator=connect, module=dbapi, _initialize=False
+            )
+        e.connect()
+        e.connect()
+        e.connect()
+        e.connect()
+        eq_(sp.called, 1)
 
 
 class TestRegNewDBAPI(fixtures.TestBase):

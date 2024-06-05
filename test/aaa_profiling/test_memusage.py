@@ -6,6 +6,7 @@ import weakref
 
 import sqlalchemy as sa
 from sqlalchemy import ForeignKey
+from sqlalchemy import func
 from sqlalchemy import inspect
 from sqlalchemy import Integer
 from sqlalchemy import MetaData
@@ -16,13 +17,13 @@ from sqlalchemy import Unicode
 from sqlalchemy import util
 from sqlalchemy.engine import result
 from sqlalchemy.orm import aliased
+from sqlalchemy.orm import attributes
 from sqlalchemy.orm import clear_mappers
 from sqlalchemy.orm import configure_mappers
-from sqlalchemy.orm import create_session
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import join as orm_join
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import Load
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm import Session
@@ -356,8 +357,35 @@ class MemUsageTest(EnsureZeroed):
 
         go()
 
+    def test_clone_expression(self):
+        # this test is for the memory issue "fixed" in #7823, where clones
+        # no longer carry along all past elements.
+        # However, due to #7903, we can't at the moment use a
+        # BindParameter here - these have to continue to carry along all
+        # the previous clones for now.  So the test here only works with
+        # expressions that dont have BindParameter objects in them.
 
-class MemUsageWBackendTest(EnsureZeroed):
+        root_expr = column("x", Integer) == column("y", Integer)
+        expr = [root_expr]
+
+        @profile_memory()
+        def go():
+            expr[0] = cloned_traverse(expr[0], {}, {})
+
+        go()
+
+    def test_tv_render_derived(self):
+        root_expr = func.some_fn().table_valued()
+        expr = [root_expr]
+
+        @profile_memory()
+        def go():
+            expr[0] = expr[0].render_derived()
+
+        go()
+
+
+class MemUsageWBackendTest(fixtures.MappedTest, EnsureZeroed):
 
     __tags__ = ("memory_intensive",)
     __requires__ = "cpython", "memory_process_intensive", "no_asyncio"
@@ -407,7 +435,7 @@ class MemUsageWBackendTest(EnsureZeroed):
 
         metadata.create_all(self.engine)
 
-        m1 = mapper(
+        m1 = self.mapper_registry.map_imperatively(
             A,
             table1,
             properties={
@@ -416,7 +444,7 @@ class MemUsageWBackendTest(EnsureZeroed):
                 )
             },
         )
-        m2 = mapper(B, table2)
+        m2 = self.mapper_registry.map_imperatively(B, table2)
 
         @profile_memory()
         def go():
@@ -497,7 +525,7 @@ class MemUsageWBackendTest(EnsureZeroed):
 
         metadata.create_all()
 
-        m1 = mapper(
+        m1 = self.mapper_registry.map_imperatively(
             A,
             table1,
             properties={
@@ -507,7 +535,9 @@ class MemUsageWBackendTest(EnsureZeroed):
             },
             _compiled_cache_size=50,
         )
-        m2 = mapper(B, table2, _compiled_cache_size=50)
+        m2 = self.mapper_registry.map_imperatively(
+            B, table2, _compiled_cache_size=50
+        )
 
         @profile_memory()
         def go():
@@ -567,7 +597,9 @@ class MemUsageWBackendTest(EnsureZeroed):
         class Wide(object):
             pass
 
-        mapper(Wide, wide_table, _compiled_cache_size=10)
+        self.mapper_registry.map_imperatively(
+            Wide, wide_table, _compiled_cache_size=10
+        )
 
         metadata.create_all(self.engine)
         with Session(self.engine) as session:
@@ -613,7 +645,7 @@ class MemUsageWBackendTest(EnsureZeroed):
         class SomeClass(object):
             pass
 
-        mapper(SomeClass, some_table)
+        self.mapper_registry.map_imperatively(SomeClass, some_table)
 
         metadata.create_all(self.engine)
 
@@ -721,14 +753,14 @@ class MemUsageWBackendTest(EnsureZeroed):
 
         @profile_memory()
         def go():
-            mapper(
+            self.mapper_registry.map_imperatively(
                 A,
                 table1,
                 properties={"bs": relationship(B, order_by=table2.c.col1)},
             )
-            mapper(B, table2)
+            self.mapper_registry.map_imperatively(B, table2)
 
-            sess = create_session(self.engine)
+            sess = Session(self.engine, autoflush=False)
             a1 = A(col2="a1")
             a2 = A(col2="a2")
             a3 = A(col2="a3")
@@ -790,9 +822,15 @@ class MemUsageWBackendTest(EnsureZeroed):
                 "id", Integer, primary_key=True, test_needs_autoincrement=True
             ),
         )
-        mapper(A, a, polymorphic_identity="a", polymorphic_on=a.c.type)
-        mapper(ASub, asub, inherits=A, polymorphic_identity="asub")
-        mapper(B, b, properties={"as_": relationship(A)})
+        self.mapper_registry.map_imperatively(
+            A, a, polymorphic_identity="a", polymorphic_on=a.c.type
+        )
+        self.mapper_registry.map_imperatively(
+            ASub, asub, inherits=A, polymorphic_identity="asub"
+        )
+        self.mapper_registry.map_imperatively(
+            B, b, properties={"as_": relationship(A)}
+        )
 
         metadata.create_all(self.engine)
         sess = Session(self.engine)
@@ -835,8 +873,10 @@ class MemUsageWBackendTest(EnsureZeroed):
             Column("id", Integer, primary_key=True),
             Column("a_id", ForeignKey("a.id")),
         )
-        m1 = mapper(A, a, properties={"bs": relationship(B)})
-        mapper(B, b)
+        m1 = self.mapper_registry.map_imperatively(
+            A, a, properties={"bs": relationship(B)}
+        )
+        self.mapper_registry.map_imperatively(B, b)
 
         @profile_memory()
         def go():
@@ -882,15 +922,18 @@ class MemUsageWBackendTest(EnsureZeroed):
             class B(A):
                 pass
 
-            mapper(
+            clear_mappers()
+            self.mapper_registry.map_imperatively(
                 A,
                 table1,
                 polymorphic_on=table1.c.col2,
                 polymorphic_identity="a",
             )
-            mapper(B, table2, inherits=A, polymorphic_identity="b")
+            self.mapper_registry.map_imperatively(
+                B, table2, inherits=A, polymorphic_identity="b"
+            )
 
-            sess = create_session(self.engine)
+            sess = Session(self.engine, autoflush=False)
             a1 = A()
             a2 = A()
             b1 = B(col3="b1")
@@ -960,7 +1003,7 @@ class MemUsageWBackendTest(EnsureZeroed):
             class B(fixtures.ComparableEntity):
                 pass
 
-            mapper(
+            self.mapper_registry.map_imperatively(
                 A,
                 table1,
                 properties={
@@ -969,9 +1012,9 @@ class MemUsageWBackendTest(EnsureZeroed):
                     )
                 },
             )
-            mapper(B, table2)
+            self.mapper_registry.map_imperatively(B, table2)
 
-            sess = create_session(self.engine)
+            sess = Session(self.engine, autoflush=False)
             a1 = A(col2="a1")
             a2 = A(col2="a2")
             b1 = B(col2="b1")
@@ -1038,7 +1081,7 @@ class MemUsageWBackendTest(EnsureZeroed):
         class T1(object):
             pass
 
-        t1_mapper = mapper(T1, t1)
+        t1_mapper = self.mapper_registry.map_imperatively(T1, t1)
 
         @testing.emits_warning()
         @profile_memory()
@@ -1046,7 +1089,7 @@ class MemUsageWBackendTest(EnsureZeroed):
             class T2(object):
                 pass
 
-            t2_mapper = mapper(T2, t2)
+            t2_mapper = self.mapper_registry.map_imperatively(T2, t2)
             t1_mapper.add_property("bar", relationship(t2_mapper))
             s1 = Session(testing.db)
             # this causes the path_registry to be invoked
@@ -1085,8 +1128,14 @@ class MemUsageWBackendTest(EnsureZeroed):
         class Bar(object):
             pass
 
-        mapper(
-            Foo, table1, properties={"bars": relationship(mapper(Bar, table2))}
+        self.mapper_registry.map_imperatively(
+            Foo,
+            table1,
+            properties={
+                "bars": relationship(
+                    self.mapper_registry.map_imperatively(Bar, table2)
+                )
+            },
         )
         metadata.create_all(self.engine)
         session = sessionmaker(self.engine)
@@ -1133,15 +1182,21 @@ class MemUsageWBackendTest(EnsureZeroed):
         class Bar(object):
             pass
 
-        mapper(
-            Foo, table1, properties={"bars": relationship(mapper(Bar, table2))}
+        self.mapper_registry.map_imperatively(
+            Foo,
+            table1,
+            properties={
+                "bars": relationship(
+                    self.mapper_registry.map_imperatively(Bar, table2)
+                )
+            },
         )
         metadata.create_all(self.engine)
         session = sessionmaker(self.engine)
 
         @profile_memory()
         def go():
-            s = table2.select().subquery()
+            s = aliased(Bar, table2.select().subquery())
             sess = session()
             sess.query(Foo).join(s, Foo.bars).all()
             sess.rollback()
@@ -1210,7 +1265,7 @@ class CycleTest(_fixtures.FixtureTest):
             def user_name(self):
                 return self.name
 
-        mapper(Foo, users)
+        self.mapper_registry.map_imperatively(Foo, users)
 
         # unfortunately there's a lot of cycles with an aliased()
         # for now, however calling upon clause_element does not seem
@@ -1609,8 +1664,6 @@ class CycleTest(_fixtures.FixtureTest):
     @testing.provide_metadata
     def test_optimized_get(self):
 
-        from sqlalchemy.ext.declarative import declarative_base
-
         Base = declarative_base(metadata=self.metadata)
 
         class Employee(Base):
@@ -1703,3 +1756,57 @@ class CycleTest(_fixtures.FixtureTest):
             s.close()
 
         go()
+
+
+class MiscMemoryIntensiveTests(fixtures.TestBase):
+    __tags__ = ("memory_intensive",)
+
+    @testing.fixture
+    def user_fixture(self, decl_base):
+        class User(decl_base):
+            __tablename__ = "user"
+
+            id = Column(Integer, primary_key=True)
+            name = Column(String(50))
+
+        decl_base.metadata.create_all(testing.db)
+        yield User
+
+    @testing.requires.predictable_gc
+    def test_gced_delete_on_rollback(self, user_fixture):
+        User = user_fixture
+
+        s = fixture_session()
+        u1 = User(name="ed")
+        s.add(u1)
+        s.commit()
+
+        s.delete(u1)
+        u1_state = attributes.instance_state(u1)
+        assert u1_state in s.identity_map.all_states()
+        assert u1_state in s._deleted
+        s.flush()
+        assert u1_state not in s.identity_map.all_states()
+        assert u1_state not in s._deleted
+        del u1
+        gc_collect()
+        gc_collect()
+        gc_collect()
+        assert u1_state.obj() is None
+
+        s.rollback()
+        # new in 1.1, not in identity map if the object was
+        # gc'ed and we restore snapshot; we've changed update_impl
+        # to just skip this object
+        assert u1_state not in s.identity_map.all_states()
+
+        # in any version, the state is replaced by the query
+        # because the identity map would switch it
+        u1 = s.query(User).filter_by(name="ed").one()
+        assert u1_state not in s.identity_map.all_states()
+
+        eq_(s.scalar(select(func.count("*")).select_from(User.__table__)), 1)
+        s.delete(u1)
+        s.flush()
+        eq_(s.scalar(select(func.count("*")).select_from(User.__table__)), 0)
+        s.commit()

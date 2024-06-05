@@ -17,6 +17,7 @@ from sqlalchemy.testing import is_false
 from sqlalchemy.testing import is_not
 from sqlalchemy.testing import is_true
 from sqlalchemy.testing import not_in
+from sqlalchemy.testing.assertions import assert_warns
 from sqlalchemy.testing.mock import call
 from sqlalchemy.testing.mock import Mock
 from sqlalchemy.testing.util import all_partial_orderings
@@ -1110,7 +1111,7 @@ class UtilTest(fixtures.ORMTest):
         attributes.del_attribute(f1, "coll")
         assert "coll" not in f1.__dict__
 
-    def test_set_commited_value_none_uselist(self):
+    def test_set_committed_value_none_uselist(self):
         """test that set_committed_value->None to a uselist generates an
         empty list"""
 
@@ -1285,7 +1286,7 @@ class BackrefTest(fixtures.ORMTest):
     def test_symmetric_o2o_inheritance(self):
         """Test that backref 'initiator' catching goes against
         a token that is global to all InstrumentedAttribute objects
-        within a particular class, not just the indvidual IA object
+        within a particular class, not just the individual IA object
         since we use distinct objects in an inheritance scenario.
 
         """
@@ -3769,7 +3770,7 @@ class TestUnlink(fixtures.TestBase):
         a1.bs.append(B())
         state = attributes.instance_state(a1)
         state._expire(state.dict, set())
-        assert_raises(Warning, coll.append, B())
+        assert_warns(Warning, coll.append, B())
 
     def test_replaced(self):
         A, B = self.A, self.B
@@ -3790,7 +3791,7 @@ class TestUnlink(fixtures.TestBase):
         a1.bs.append(B())
         state = attributes.instance_state(a1)
         state._reset(state.dict, "bs")
-        assert_raises(Warning, coll.append, B())
+        assert_warns(Warning, coll.append, B())
 
     def test_ad_hoc_lazy(self):
         A, B = self.A, self.B
@@ -3799,4 +3800,4 @@ class TestUnlink(fixtures.TestBase):
         a1.bs.append(B())
         state = attributes.instance_state(a1)
         _set_callable(state, state.dict, "bs", lambda: B())
-        assert_raises(Warning, coll.append, B())
+        assert_warns(Warning, coll.append, B())

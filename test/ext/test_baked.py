@@ -8,7 +8,6 @@ from sqlalchemy import func
 from sqlalchemy import testing
 from sqlalchemy.ext import baked
 from sqlalchemy.orm import exc as orm_exc
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import subqueryload
@@ -36,7 +35,7 @@ class StateChangeTest(BakedTest):
     def setup_mappers(cls):
         User = cls.classes.User
 
-        mapper(User, cls.tables.users)
+        cls.mapper_registry.map_imperatively(User, cls.tables.users)
 
     def _assert_cache_key(self, key, elements):
         eq_(key, tuple(elem.__code__ for elem in elements))
@@ -131,7 +130,7 @@ class LikeQueryTest(BakedTest):
     def setup_mappers(cls):
         User = cls.classes.User
 
-        mapper(User, cls.tables.users)
+        cls.mapper_registry.map_imperatively(User, cls.tables.users)
 
     def test_first_no_result(self):
         User = self.classes.User
@@ -224,7 +223,7 @@ class LikeQueryTest(BakedTest):
 
         self.assert_sql_count(testing.db, go, 1)
 
-        u1 = sess.query(User).get(7)  # noqa
+        u1 = sess.get(User, 7)  # noqa
 
         def go():
             u2 = bq(sess).get(7)
@@ -296,7 +295,7 @@ class LikeQueryTest(BakedTest):
         class AddressUser(object):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             AddressUser,
             self.tables.users.outerjoin(self.tables.addresses),
             properties={
@@ -315,7 +314,7 @@ class LikeQueryTest(BakedTest):
 
         self.assert_sql_count(testing.db, go, 1)
 
-        u1 = sess.query(AddressUser).get((10, None))  # noqa
+        u1 = sess.get(AddressUser, (10, None))  # noqa
 
         def go():
             u2 = bq(sess).get((10, None))
@@ -369,7 +368,7 @@ class ResultPostCriteriaTest(BakedTest):
         Address = cls.classes.Address
         Order = cls.classes.Order
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             User,
             cls.tables.users,
             properties={
@@ -379,8 +378,8 @@ class ResultPostCriteriaTest(BakedTest):
                 "orders": relationship(Order, order_by=cls.tables.orders.c.id),
             },
         )
-        mapper(Address, cls.tables.addresses)
-        mapper(Order, cls.tables.orders)
+        cls.mapper_registry.map_imperatively(Address, cls.tables.addresses)
+        cls.mapper_registry.map_imperatively(Order, cls.tables.orders)
 
     @contextlib.contextmanager
     def _fixture(self):
@@ -450,7 +449,7 @@ class ResultTest(BakedTest):
         Address = cls.classes.Address
         Order = cls.classes.Order
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             User,
             cls.tables.users,
             properties={
@@ -460,8 +459,8 @@ class ResultTest(BakedTest):
                 "orders": relationship(Order, order_by=cls.tables.orders.c.id),
             },
         )
-        mapper(Address, cls.tables.addresses)
-        mapper(Order, cls.tables.orders)
+        cls.mapper_registry.map_imperatively(Address, cls.tables.addresses)
+        cls.mapper_registry.map_imperatively(Order, cls.tables.orders)
 
     def test_cachekeys_on_constructor(self):
         User = self.classes.User
@@ -534,7 +533,7 @@ class ResultTest(BakedTest):
 
             bq += fn2
 
-            sess = fixture_session(autocommit=True, enable_baked_queries=False)
+            sess = fixture_session(enable_baked_queries=False)
             eq_(bq.add_criteria(fn3)(sess).params(id=7).all(), [(7, "jack")])
 
         eq_(
@@ -849,7 +848,6 @@ class ResultTest(BakedTest):
             for cond1, cond2 in itertools.product(
                 *[(False, True) for j in range(2)]
             ):
-                print("HI----")
                 bq = base_bq._clone()
 
                 sess = fixture_session()
@@ -985,7 +983,7 @@ class CustomIntegrationTest(testing.AssertsCompiledSQL, BakedTest):
         User = self.classes.User
         Address = self.classes.Address
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             self.tables.users,
             properties={
@@ -997,7 +995,7 @@ class CustomIntegrationTest(testing.AssertsCompiledSQL, BakedTest):
                 )
             },
         )
-        mapper(Address, self.tables.addresses)
+        self.mapper_registry.map_imperatively(Address, self.tables.addresses)
         return User, Address
 
     def _query_fixture(self):
@@ -1045,6 +1043,7 @@ class CustomIntegrationTest(testing.AssertsCompiledSQL, BakedTest):
         from sqlalchemy.orm.interfaces import UserDefinedOption
 
         class RelationshipCache(UserDefinedOption):
+            inherit_cache = True
 
             propagate_to_loaders = True
 
@@ -1081,14 +1080,14 @@ class CustomIntegrationTest(testing.AssertsCompiledSQL, BakedTest):
         q = sess.query(User).filter(User.id == 7).set_cache_key("user7")
 
         eq_(
-            sess.execute(q).all(),
+            sess.execute(q.statement).all(),
             [(User(id=7, addresses=[Address(id=1)]),)],
         )
 
         eq_(list(q.cache), ["user7"])
 
         eq_(
-            sess.execute(q).all(),
+            sess.execute(q.statement).all(),
             [(User(id=7, addresses=[Address(id=1)]),)],
         )
 

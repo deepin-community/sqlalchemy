@@ -3,15 +3,14 @@ from sqlalchemy import ForeignKey
 from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import testing
-from sqlalchemy.ext import declarative as decl
-from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.orm import class_mapper
-from sqlalchemy.orm import clear_mappers
 from sqlalchemy.orm import close_all_sessions
 from sqlalchemy.orm import configure_mappers
+from sqlalchemy.orm import declared_attr
 from sqlalchemy.orm import deferred
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
+from sqlalchemy.orm import with_polymorphic
+from sqlalchemy.orm.decl_api import registry
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import eq_
@@ -29,15 +28,17 @@ Base = None
 class DeclarativeTestBase(fixtures.TestBase, testing.AssertsExecutionResults):
     def setup_test(self):
         global Base
-        Base = decl.declarative_base(testing.db)
+        self.mapper_registry = registry()
+        Base = self.mapper_registry.generate_base()
 
     def teardown_test(self):
         close_all_sessions()
-        clear_mappers()
+        self.mapper_registry.dispose()
         Base.metadata.drop_all(testing.db)
 
 
 class DeclarativeInheritanceTest(DeclarativeTestBase):
+    @testing.emits_warning(r".*does not indicate a polymorphic_identity")
     def test_we_must_copy_mapper_args(self):
         class Person(Base):
 
@@ -334,7 +335,7 @@ class DeclarativeInheritanceTest(DeclarativeTestBase):
             Column("kind", String(50)),
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Person,
             person_table,
             polymorphic_on="kind",
@@ -367,7 +368,7 @@ class DeclarativeInheritanceTest(DeclarativeTestBase):
             Column("kind", String(50)),
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Person,
             person_table,
             polymorphic_on="kind",
@@ -400,7 +401,7 @@ class DeclarativeInheritanceTest(DeclarativeTestBase):
             Column("kind", String(50)),
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Person,
             person_table,
             polymorphic_on="kind",
@@ -673,6 +674,9 @@ class DeclarativeInheritanceTest(DeclarativeTestBase):
             __tablename__ = "employee"
 
             id = Column(Integer, ForeignKey(Person.id), primary_key=True)
+            __mapper_args__ = {
+                "polymorphic_identity": "employee",
+            }
 
         class Engineer(Employee):
             __mapper_args__ = {"polymorphic_identity": "engineer"}
@@ -968,10 +972,11 @@ class DeclarativeInheritanceTest(DeclarativeTestBase):
         sess.add(c2)
         sess.flush()
         sess.expunge_all()
+
+        wp = with_polymorphic(Person, [Engineer])
         eq_(
-            sess.query(Person)
-            .with_polymorphic(Engineer)
-            .filter(Engineer.primary_language == "cobol")
+            sess.query(wp)
+            .filter(wp.Engineer.primary_language == "cobol")
             .first(),
             Engineer(name="vlad"),
         )
@@ -1006,9 +1011,15 @@ class DeclarativeInheritanceTest(DeclarativeTestBase):
             __mapper_args__ = {"polymorphic_identity": "manager"}
             id = Column(Integer, ForeignKey("people.id"), primary_key=True)
             golf_swing = Column(String(50))
+            __mapper_args__ = {
+                "polymorphic_identity": "manager",
+            }
 
         class Boss(Manager):
             boss_name = Column(String(50))
+            __mapper_args__ = {
+                "polymorphic_identity": "boss",
+            }
 
         is_(
             Boss.__mapper__.column_attrs["boss_name"].columns[0],

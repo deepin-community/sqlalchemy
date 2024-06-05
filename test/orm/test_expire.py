@@ -16,7 +16,6 @@ from sqlalchemy.orm import exc as orm_exc
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import lazyload
 from sqlalchemy.orm import make_transient_to_detached
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import strategies
@@ -26,6 +25,7 @@ from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
+from sqlalchemy.testing.assertions import expect_raises_message
 from sqlalchemy.testing.assertsql import CountStatements
 from sqlalchemy.testing.fixtures import fixture_session
 from sqlalchemy.testing.schema import Column
@@ -43,15 +43,15 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={"addresses": relationship(Address, backref="user")},
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session(autoflush=False)
-        u = sess.query(User).get(7)
+        u = sess.get(User, 7)
         assert len(u.addresses) == 1
         u.name = "foo"
         del u.addresses[0]
@@ -90,13 +90,15 @@ class ExpireTest(_fixtures.FixtureTest):
         User, users = self.classes.User, self.tables.users
         Address, addresses = self.classes.Address, self.tables.addresses
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"user": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"user": relationship(User)}
+        )
 
         s = fixture_session()
 
-        a1 = s.query(Address).get(2)
-        u1 = s.query(User).get(7)
+        a1 = s.get(Address, 2)
+        u1 = s.get(User, 7)
         a1.user = u1
 
         s.expire(a1, ["user_id"])
@@ -107,9 +109,9 @@ class ExpireTest(_fixtures.FixtureTest):
     def test_persistence_check(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         s = fixture_session()
-        u = s.query(User).get(7)
+        u = s.get(User, 7)
         s.expunge_all()
 
         assert_raises_message(
@@ -122,13 +124,13 @@ class ExpireTest(_fixtures.FixtureTest):
     def test_get_refreshes(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         s = fixture_session(autocommit=False)
-        u = s.query(User).get(10)
+        u = s.get(User, 10)
         s.expire_all()
 
         def go():
-            s.query(User).get(10)  # get() refreshes
+            s.get(User, 10)  # get() refreshes
 
         self.assert_sql_count(testing.db, go, 1)
 
@@ -138,31 +140,31 @@ class ExpireTest(_fixtures.FixtureTest):
         self.assert_sql_count(testing.db, go, 0)
 
         def go():
-            s.query(User).get(10)  # expire flag reset, so not expired
+            s.get(User, 10)  # expire flag reset, so not expired
 
         self.assert_sql_count(testing.db, go, 0)
 
     def test_get_on_deleted_expunges(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         s = fixture_session(autocommit=False)
-        u = s.query(User).get(10)
+        u = s.get(User, 10)
 
         s.expire_all()
         s.execute(users.delete().where(User.id == 10))
 
         # object is gone, get() returns None, removes u from session
         assert u in s
-        assert s.query(User).get(10) is None
+        assert s.get(User, 10) is None
         assert u not in s  # and expunges
 
     def test_refresh_on_deleted_raises(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         s = fixture_session(autocommit=False)
-        u = s.query(User).get(10)
+        u = s.get(User, 10)
         s.expire_all()
 
         s.expire_all()
@@ -181,14 +183,14 @@ class ExpireTest(_fixtures.FixtureTest):
     def test_rollback_undoes_expunge_from_deleted(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         s = fixture_session(autocommit=False)
-        u = s.query(User).get(10)
+        u = s.get(User, 10)
         s.expire_all()
         s.execute(users.delete().where(User.id == 10))
 
         # do a get()/remove u from session
-        assert s.query(User).get(10) is None
+        assert s.get(User, 10) is None
         assert u not in s
 
         s.rollback()
@@ -204,7 +206,7 @@ class ExpireTest(_fixtures.FixtureTest):
 
         Order, orders = self.classes.Order, self.tables.orders
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={"description": deferred(orders.c.description)},
@@ -236,9 +238,11 @@ class ExpireTest(_fixtures.FixtureTest):
     def test_deferred_notfound(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users, properties={"name": deferred(users.c.name)})
+        self.mapper_registry.map_imperatively(
+            User, users, properties={"name": deferred(users.c.name)}
+        )
         s = fixture_session(autocommit=False)
-        u = s.query(User).get(10)
+        u = s.get(User, 10)
 
         assert "name" not in u.__dict__
         s.execute(users.delete().where(User.id == 10))
@@ -259,7 +263,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -268,9 +272,9 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         s = fixture_session(autoflush=True, autocommit=False)
-        u = s.query(User).get(8)
+        u = s.get(User, 8)
         adlist = u.addresses
         eq_(
             adlist,
@@ -303,7 +307,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -312,9 +316,9 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         s = fixture_session(autoflush=True, autocommit=False)
-        u = s.query(User).get(8)
+        u = s.get(User, 8)
         assert_raises_message(
             sa_exc.InvalidRequestError,
             "properties specified for refresh",
@@ -326,14 +330,14 @@ class ExpireTest(_fixtures.FixtureTest):
     def test_refresh_cancels_expire(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         s = fixture_session()
-        u = s.query(User).get(7)
+        u = s.get(User, 7)
         s.expire(u)
         s.refresh(u)
 
         def go():
-            u = s.query(User).get(7)
+            u = s.get(User, 7)
             eq_(u.name, "jack")
 
         self.assert_sql_count(testing.db, go, 0)
@@ -341,10 +345,10 @@ class ExpireTest(_fixtures.FixtureTest):
     def test_expire_doesntload_on_set(self):
         User, users = self.classes.User, self.tables.users
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session(autoflush=False)
-        u = sess.query(User).get(7)
+        u = sess.get(User, 7)
 
         sess.expire(u, attribute_names=["name"])
 
@@ -354,14 +358,14 @@ class ExpireTest(_fixtures.FixtureTest):
         self.assert_sql_count(testing.db, go, 0)
         sess.flush()
         sess.expunge_all()
-        assert sess.query(User).get(7).name == "somenewname"
+        assert sess.get(User, 7).name == "somenewname"
 
     def test_no_session(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         sess = fixture_session()
-        u = sess.query(User).get(7)
+        u = sess.get(User, 7)
 
         sess.expire(u, attribute_names=["name"])
         sess.expunge(u)
@@ -372,7 +376,7 @@ class ExpireTest(_fixtures.FixtureTest):
 
         # this was the opposite in 0.4, but the reasoning there seemed off.
         # expiring a pending instance makes no sense, so should raise
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         sess = fixture_session()
         u = User(id=15)
         sess.add(u)
@@ -385,9 +389,9 @@ class ExpireTest(_fixtures.FixtureTest):
         # an instance is pending, but has expired attributes.  this
         # is actually part of a larger behavior when postfetch needs to
         # occur during a flush() on an instance that was just inserted
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         sess = fixture_session(autoflush=False)
-        u = sess.query(User).get(7)
+        u = sess.get(User, 7)
 
         sess.expire(u, attribute_names=["name"])
         sess.expunge(u)
@@ -401,9 +405,9 @@ class ExpireTest(_fixtures.FixtureTest):
 
         # same as test_no_instance_key, but the PK columns
         # are absent.  ensure an error is raised.
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         sess = fixture_session()
-        u = sess.query(User).get(7)
+        u = sess.get(User, 7)
 
         sess.expire(u, attribute_names=["name", "id"])
         sess.expunge(u)
@@ -418,9 +422,9 @@ class ExpireTest(_fixtures.FixtureTest):
 
         Order, orders = self.classes.Order, self.tables.orders
 
-        mapper(Order, orders)
+        self.mapper_registry.map_imperatively(Order, orders)
         sess = fixture_session(autoflush=False)
-        o = sess.query(Order).get(3)
+        o = sess.get(Order, 3)
         sess.expire(o)
 
         o.description = "order 3 modified"
@@ -469,10 +473,10 @@ class ExpireTest(_fixtures.FixtureTest):
 
         orders, Order = self.tables.orders, self.classes.Order
 
-        mapper(Order, orders)
+        self.mapper_registry.map_imperatively(Order, orders)
 
         sess = fixture_session(autoflush=False)
-        o = sess.query(Order).get(3)
+        o = sess.get(Order, 3)
         sess.expire(o)
 
         sess.execute(orders.update(), dict(description="order 3 modified"))
@@ -495,7 +499,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -504,9 +508,9 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         s = fixture_session(autoflush=False)
-        u = s.query(User).get(8)
+        u = s.get(User, 8)
         assert u.addresses[0].email_address == "ed@wood.com"
 
         u.addresses[0].email_address = "someotheraddress"
@@ -521,7 +525,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -530,9 +534,9 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         s = fixture_session(autoflush=False)
-        u = s.query(User).get(8)
+        u = s.get(User, 8)
         assert u.addresses[0].email_address == "ed@wood.com"
 
         u.addresses[0].email_address = "someotheraddress"
@@ -563,15 +567,15 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={"addresses": relationship(Address, cascade=cascade)},
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         s = fixture_session(autoflush=False)
 
-        u = s.query(User).get(8)
+        u = s.get(User, 8)
         a = Address(id=12, email_address="foobar")
 
         u.addresses.append(a)
@@ -595,15 +599,15 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={"addresses": relationship(Address, backref="user")},
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session()
-        u = sess.query(User).get(7)
+        u = sess.get(User, 7)
 
         sess.expire(u)
         assert "name" not in u.__dict__
@@ -626,7 +630,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -635,10 +639,10 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session()
-        u = sess.query(User).get(7)
+        u = sess.get(User, 7)
 
         sess.expire(u)
         assert "name" not in u.__dict__
@@ -675,7 +679,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -684,10 +688,10 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session(autoflush=False)
-        u = sess.query(User).get(7)
+        u = sess.get(User, 7)
 
         a1 = u.addresses[0]
         eq_(a1.email_address, "jack@bean.com")
@@ -720,13 +724,15 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={"orders": relationship(Order, order_by=orders.c.id)},
         )
-        mapper(Address, addresses, properties={"user": relationship(User)})
-        mapper(Order, orders)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"user": relationship(User)}
+        )
+        self.mapper_registry.map_imperatively(Order, orders)
 
         sess = fixture_session(autoflush=False)
 
@@ -821,7 +827,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -830,9 +836,9 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         sess = fixture_session(autoflush=False)
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
         sess.expire(u, ["name", "addresses"])
         u.addresses
         assert "name" not in u.__dict__
@@ -840,6 +846,58 @@ class ExpireTest(_fixtures.FixtureTest):
         u.name
         assert "name" in u.__dict__
         assert len(u.addresses) == 2
+
+    @testing.combinations(
+        (True, False),
+        (False, False),
+        (False, True),
+    )
+    def test_skip_options_that_dont_match(self, test_control_case, do_expire):
+        """test #7318"""
+
+        User, Address, Order = self.classes("User", "Address", "Order")
+        users, addresses, orders = self.tables("users", "addresses", "orders")
+
+        self.mapper_registry.map_imperatively(Order, orders)
+
+        self.mapper_registry.map_imperatively(
+            User,
+            users,
+            properties={
+                "addresses": relationship(
+                    Address, backref="user", lazy="joined"
+                ),
+                "orders": relationship(Order),
+            },
+        )
+        self.mapper_registry.map_imperatively(Address, addresses)
+        sess = fixture_session()
+
+        if test_control_case:
+            # this would be the error we are skipping, make sure it happens
+            # for up front
+            with expect_raises_message(
+                sa.exc.ArgumentError,
+                'Mapped attribute "User.addresses" does not apply to '
+                "any of the root entities in this query",
+            ):
+                row = sess.execute(
+                    select(Order).options(joinedload(User.addresses))
+                ).first()
+        else:
+            stmt = (
+                select(User, Order)
+                .join_from(User, Order)
+                .options(joinedload(User.addresses))
+                .order_by(User.id, Order.id)
+            )
+
+            row = sess.execute(stmt).first()
+
+            u1, o1 = row
+            if do_expire:
+                sess.expire(o1)
+            eq_(o1.description, "order 1")
 
     def test_mapper_joinedload_props_load(self):
         users, Address, addresses, User = (
@@ -851,7 +909,7 @@ class ExpireTest(_fixtures.FixtureTest):
 
         # changed in #1763, eager loaders are run when we unexpire
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -860,9 +918,9 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         sess = fixture_session()
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
         sess.expire(u)
         u.id
 
@@ -880,14 +938,14 @@ class ExpireTest(_fixtures.FixtureTest):
 
         # changed in #1763, eager loaders are run when we unexpire
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={"addresses": relationship(Address, backref="user")},
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         sess = fixture_session()
-        u = sess.query(User).options(joinedload(User.addresses)).get(8)
+        u = sess.get(User, 8, options=[joinedload(User.addresses)])
         sess.expire(u)
         u.id
         assert "addresses" in u.__dict__
@@ -901,7 +959,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.tables.addresses,
             self.classes.User,
         )
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -910,9 +968,9 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
         sess = fixture_session()
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
         sess.expire(u)
 
         # here, the lazy loader will encounter the attribute already
@@ -928,10 +986,12 @@ class ExpireTest(_fixtures.FixtureTest):
     def test_expire_synonym(self):
         User, users = self.classes.User, self.tables.users
 
-        mapper(User, users, properties={"uname": sa.orm.synonym("name")})
+        self.mapper_registry.map_imperatively(
+            User, users, properties={"uname": sa.orm.synonym("name")}
+        )
 
         sess = fixture_session()
-        u = sess.query(User).get(7)
+        u = sess.get(User, 7)
         assert "name" in u.__dict__
         assert u.uname == u.name
 
@@ -952,10 +1012,10 @@ class ExpireTest(_fixtures.FixtureTest):
     def test_partial_expire(self):
         orders, Order = self.tables.orders, self.classes.Order
 
-        mapper(Order, orders)
+        self.mapper_registry.map_imperatively(Order, orders)
 
         sess = fixture_session(autoflush=False)
-        o = sess.query(Order).get(3)
+        o = sess.get(Order, 3)
 
         sess.expire(o, attribute_names=["description"])
         assert "id" in o.__dict__
@@ -1016,15 +1076,19 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
-            properties={"addresses": relationship(Address, backref="user")},
+            properties={
+                "addresses": relationship(
+                    Address, backref="user", order_by=addresses.c.id
+                )
+            },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session(autoflush=False)
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
 
         sess.expire(u, ["name", "addresses"])
         assert "name" not in u.__dict__
@@ -1074,7 +1138,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -1083,10 +1147,10 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session(autoflush=False)
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
 
         sess.expire(u, ["name", "addresses"])
         assert "name" not in u.__dict__
@@ -1132,15 +1196,15 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={"addresses": relationship(Address, backref="user")},
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session(autoflush=False)
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
         assert "name" in u.__dict__
         u.addresses
         assert "addresses" in u.__dict__
@@ -1150,7 +1214,7 @@ class ExpireTest(_fixtures.FixtureTest):
         assert "addresses" not in u.__dict__
         (
             sess.query(User)
-            .options(sa.orm.joinedload("addresses"))
+            .options(sa.orm.joinedload(User.addresses))
             .filter_by(id=8)
             .all()
         )
@@ -1160,14 +1224,14 @@ class ExpireTest(_fixtures.FixtureTest):
     def test_partial_expire_deferred(self):
         orders, Order = self.tables.orders, self.classes.Order
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={"description": sa.orm.deferred(orders.c.description)},
         )
 
         sess = fixture_session(autoflush=False)
-        o = sess.query(Order).get(3)
+        o = sess.get(Order, 3)
         sess.expire(o, ["description", "isopen"])
         assert "isopen" not in o.__dict__
         assert "description" not in o.__dict__
@@ -1195,11 +1259,11 @@ class ExpireTest(_fixtures.FixtureTest):
 
         sa.orm.clear_mappers()
 
-        mapper(Order, orders)
+        self.mapper_registry.map_imperatively(Order, orders)
         sess.expunge_all()
 
         # same tests, using deferred at the options level
-        o = sess.query(Order).options(sa.orm.defer("description")).get(3)
+        o = sess.get(Order, 3, options=[sa.orm.defer(Order.description)])
 
         assert "description" not in o.__dict__
 
@@ -1243,7 +1307,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -1252,10 +1316,10 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session(autoflush=False)
-        u = sess.query(User).get(8)
+        u = sess.get(User, 8)
         assert len(u.addresses) == 3
         sess.expire(u)
         assert "addresses" not in u.__dict__
@@ -1272,7 +1336,7 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -1284,7 +1348,7 @@ class ExpireTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session(autoflush=False)
         userlist = sess.query(User).order_by(User.id).all()
@@ -1306,7 +1370,7 @@ class ExpireTest(_fixtures.FixtureTest):
 
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         sess = fixture_session(autoflush=False)
 
@@ -1356,7 +1420,9 @@ class ExpireTest(_fixtures.FixtureTest):
 
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users, properties={"name": deferred(users.c.name)})
+        self.mapper_registry.map_imperatively(
+            User, users, properties={"name": deferred(users.c.name)}
+        )
 
         sess = fixture_session(autoflush=False)
         u1 = sess.query(User).options(undefer(User.name)).first()
@@ -1405,12 +1471,12 @@ class ExpireTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={"addresses": relationship(Address, lazy="noload")},
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         sess = fixture_session(autoflush=False)
         u1 = sess.query(User).options(lazyload(User.addresses)).first()
@@ -1452,7 +1518,7 @@ class ExpireTest(_fixtures.FixtureTest):
 
     def test_deferred_expire_w_transient_to_detached(self):
         orders, Order = self.tables.orders, self.classes.Order
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={"description": deferred(orders.c.description)},
@@ -1468,7 +1534,7 @@ class ExpireTest(_fixtures.FixtureTest):
 
     def test_deferred_expire_normally(self):
         orders, Order = self.tables.orders, self.classes.Order
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={"description": deferred(orders.c.description)},
@@ -1483,7 +1549,7 @@ class ExpireTest(_fixtures.FixtureTest):
 
     def test_deferred_expire_explicit_attrs(self):
         orders, Order = self.tables.orders, self.classes.Order
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={"description": deferred(orders.c.description)},
@@ -1565,13 +1631,13 @@ class PolymorphicExpireTest(fixtures.MappedTest):
             cls.classes.Engineer,
         )
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Person,
             people,
             polymorphic_on=people.c.type,
             polymorphic_identity="person",
         )
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Engineer,
             engineers,
             inherits=Person,
@@ -1628,7 +1694,7 @@ class PolymorphicExpireTest(fixtures.MappedTest):
         Engineer = self.classes.Engineer
 
         sess = fixture_session(autoflush=False)
-        e1 = sess.query(Engineer).get(2)
+        e1 = sess.get(Engineer, 2)
 
         sess.expire(e1, attribute_names=["name"])
         sess.expunge(e1)
@@ -1643,7 +1709,7 @@ class PolymorphicExpireTest(fixtures.MappedTest):
         # same as test_no_instance_key, but the PK columns
         # are absent.  ensure an error is raised.
         sess = fixture_session(autoflush=False)
-        e1 = sess.query(Engineer).get(2)
+        e1 = sess.get(Engineer, 2)
 
         sess.expire(e1, attribute_names=["name", "person_id"])
         sess.expunge(e1)
@@ -1667,14 +1733,14 @@ class ExpiredPendingTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={"addresses": relationship(Address, backref="user")},
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
-        sess = fixture_session(autoflush=False)
+        sess = fixture_session(autoflush=False, future=True)
         a1 = Address(email_address="a1")
         sess.add(a1)
         sess.flush()
@@ -1691,6 +1757,9 @@ class ExpiredPendingTest(_fixtures.FixtureTest):
         # in user.addresses
         a2 = Address(email_address="a2")
         a2.user = u1
+
+        # needed now that cascade backrefs is disabled
+        sess.add(a2)
 
         # expire u1.addresses again.  this expires
         # "pending" as well.
@@ -1751,9 +1820,11 @@ class LifecycleTest(fixtures.MappedTest):
 
     @classmethod
     def setup_mappers(cls):
-        mapper(cls.classes.Data, cls.tables.data)
-        mapper(cls.classes.DataFetched, cls.tables.data_fetched)
-        mapper(
+        cls.mapper_registry.map_imperatively(cls.classes.Data, cls.tables.data)
+        cls.mapper_registry.map_imperatively(
+            cls.classes.DataFetched, cls.tables.data_fetched
+        )
+        cls.mapper_registry.map_imperatively(
             cls.classes.DataDefer,
             cls.tables.data_defer,
             properties={"data": deferred(cls.tables.data_defer.c.data)},
@@ -1865,17 +1936,18 @@ class RefreshTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
                 "addresses": relationship(
-                    mapper(Address, addresses), backref="user"
+                    self.mapper_registry.map_imperatively(Address, addresses),
+                    backref="user",
                 )
             },
         )
         s = fixture_session(autoflush=False)
-        u = s.query(User).get(7)
+        u = s.get(User, 7)
         u.name = "foo"
         a = Address()
         assert sa.orm.object_session(a) is None
@@ -1908,9 +1980,9 @@ class RefreshTest(_fixtures.FixtureTest):
     def test_persistence_check(self):
         users, User = self.tables.users, self.classes.User
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         s = fixture_session()
-        u = s.query(User).get(7)
+        u = s.get(User, 7)
         s.expunge_all()
         assert_raises_message(
             sa_exc.InvalidRequestError,
@@ -1922,13 +1994,15 @@ class RefreshTest(_fixtures.FixtureTest):
         User, users = self.classes.User, self.tables.users
         Address, addresses = self.classes.Address, self.tables.addresses
 
-        mapper(User, users)
-        mapper(Address, addresses, properties={"user": relationship(User)})
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
+            Address, addresses, properties={"user": relationship(User)}
+        )
 
         s = fixture_session()
 
-        a1 = s.query(Address).get(2)
-        u1 = s.query(User).get(7)
+        a1 = s.get(Address, 2)
+        u1 = s.get(User, 7)
         a1.user = u1
 
         s.refresh(a1, ["user_id"])
@@ -1939,9 +2013,9 @@ class RefreshTest(_fixtures.FixtureTest):
     def test_refresh_expired(self):
         User, users = self.classes.User, self.tables.users
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         s = fixture_session()
-        u = s.query(User).get(7)
+        u = s.get(User, 7)
         s.expire(u)
         assert "name" not in u.__dict__
         s.refresh(u)
@@ -1960,12 +2034,16 @@ class RefreshTest(_fixtures.FixtureTest):
         )
 
         s = fixture_session()
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
-            properties={"addresses": relationship(mapper(Address, addresses))},
+            properties={
+                "addresses": relationship(
+                    self.mapper_registry.map_imperatively(Address, addresses)
+                )
+            },
         )
-        q = s.query(User).options(sa.orm.lazyload("addresses"))
+        q = s.query(User).options(sa.orm.lazyload(User.addresses))
         u = q.filter(users.c.id == 8).first()
 
         def go():
@@ -1984,24 +2062,25 @@ class RefreshTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
                 "addresses": relationship(
-                    mapper(Address, addresses), lazy="joined"
+                    self.mapper_registry.map_imperatively(Address, addresses),
+                    lazy="joined",
                 )
             },
         )
 
         s = fixture_session()
-        u = s.query(User).get(8)
+        u = s.get(User, 8)
         assert len(u.addresses) == 3
         s.refresh(u)
         assert len(u.addresses) == 3
 
         s = fixture_session()
-        u = s.query(User).get(8)
+        u = s.get(User, 8)
         assert len(u.addresses) == 3
         s.expire(u)
         assert len(u.addresses) == 3
@@ -2014,21 +2093,25 @@ class RefreshTest(_fixtures.FixtureTest):
             "users", "addresses", "dingalings"
         )
 
-        mapper(User, users, properties={"addresses": relationship(Address)})
+        self.mapper_registry.map_imperatively(
+            User, users, properties={"addresses": relationship(Address)}
+        )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties={"dingalings": relationship(Dingaling)},
         )
 
-        mapper(Dingaling, dingalings)
+        self.mapper_registry.map_imperatively(Dingaling, dingalings)
 
         s = fixture_session()
         q = (
             s.query(User)
             .filter_by(name="fred")
-            .options(sa.orm.lazyload("addresses").joinedload("dingalings"))
+            .options(
+                sa.orm.lazyload(User.addresses).joinedload(Address.dingalings)
+            )
         )
 
         u1 = q.one()
@@ -2063,9 +2146,9 @@ class RefreshTest(_fixtures.FixtureTest):
         )
 
         s = fixture_session()
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(

@@ -1,12 +1,14 @@
 # -*- encoding: utf-8
 import datetime
 import decimal
+import random
 
 from sqlalchemy import Column
 from sqlalchemy import DDL
 from sqlalchemy import event
 from sqlalchemy import exc
 from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import Identity
 from sqlalchemy import Index
 from sqlalchemy import inspect
@@ -23,6 +25,7 @@ from sqlalchemy.dialects import mssql
 from sqlalchemy.dialects.mssql import base
 from sqlalchemy.dialects.mssql.information_schema import CoerceUnicode
 from sqlalchemy.dialects.mssql.information_schema import tables
+from sqlalchemy.pool import NullPool
 from sqlalchemy.schema import CreateIndex
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import ComparesTables
@@ -33,6 +36,7 @@ from sqlalchemy.testing import in_
 from sqlalchemy.testing import is_
 from sqlalchemy.testing import is_true
 from sqlalchemy.testing import mock
+from sqlalchemy.testing import provision
 
 
 class ReflectionTest(fixtures.TestBase, ComparesTables, AssertsCompiledSQL):
@@ -217,6 +221,7 @@ class ReflectionTest(fixtures.TestBase, ComparesTables, AssertsCompiledSQL):
                     "referred_schema": "test_schema",
                     "referred_table": "subject",
                     "referred_columns": ["id"],
+                    "options": {},
                 }
             ],
         )
@@ -309,6 +314,132 @@ class ReflectionTest(fixtures.TestBase, ComparesTables, AssertsCompiledSQL):
         found_it = testing.db.dialect.has_table(connection, table_name)
         eq_(found_it, exists)
 
+    def test_has_table_temp_not_present_but_another_session(self):
+        """test #6910"""
+
+        with testing.db.connect() as c1, testing.db.connect() as c2:
+
+            try:
+                with c1.begin():
+                    c1.exec_driver_sql(
+                        "create table #myveryveryuniquetemptablename (a int)"
+                    )
+                assert not c2.dialect.has_table(
+                    c2, "#myveryveryuniquetemptablename"
+                )
+            finally:
+                with c1.begin():
+                    c1.exec_driver_sql(
+                        "drop table #myveryveryuniquetemptablename"
+                    )
+
+    def test_has_table_temp_temp_present_both_sessions(self):
+        """test #7168, continues from #6910"""
+
+        with testing.db.connect() as c1, testing.db.connect() as c2:
+            try:
+                with c1.begin():
+                    c1.exec_driver_sql(
+                        "create table #myveryveryuniquetemptablename (a int)"
+                    )
+
+                with c2.begin():
+                    c2.exec_driver_sql(
+                        "create table #myveryveryuniquetemptablename (a int)"
+                    )
+
+                assert c2.dialect.has_table(
+                    c2, "#myveryveryuniquetemptablename"
+                )
+            finally:
+                with c1.begin():
+                    c1.exec_driver_sql(
+                        "drop table #myveryveryuniquetemptablename"
+                    )
+                with c2.begin():
+                    c2.exec_driver_sql(
+                        "drop table #myveryveryuniquetemptablename"
+                    )
+
+    @testing.fixture
+    def temp_db_alt_collation_fixture(
+        self, connection_no_trans, testing_engine
+    ):
+        temp_db_name = "%s_different_collation" % (
+            provision.FOLLOWER_IDENT or "default"
+        )
+        cnxn = connection_no_trans.execution_options(
+            isolation_level="AUTOCOMMIT"
+        )
+        cnxn.exec_driver_sql("DROP DATABASE IF EXISTS %s" % temp_db_name)
+        cnxn.exec_driver_sql(
+            "CREATE DATABASE %s COLLATE Danish_Norwegian_CI_AS" % temp_db_name
+        )
+        eng = testing_engine(
+            url=testing.db.url.set(database=temp_db_name),
+            options=dict(poolclass=NullPool, future=True),
+        )
+
+        yield eng
+
+        cnxn.exec_driver_sql("DROP DATABASE IF EXISTS %s" % temp_db_name)
+
+    def test_global_temp_different_collation(
+        self, temp_db_alt_collation_fixture
+    ):
+        """test #8035"""
+
+        tname = "##foo%s" % (random.randint(1, 1000000),)
+
+        with temp_db_alt_collation_fixture.connect() as conn:
+            conn.exec_driver_sql(
+                "CREATE TABLE %s (id int primary key)" % (tname,)
+            )
+            conn.commit()
+
+            eq_(
+                inspect(conn).get_columns(tname),
+                [
+                    {
+                        "name": "id",
+                        "type": testing.eq_type_affinity(sqltypes.INTEGER),
+                        "nullable": False,
+                        "default": None,
+                        "autoincrement": False,
+                    }
+                ],
+            )
+            Table(tname, MetaData(), autoload_with=conn)
+
+    @testing.combinations(
+        ("test_schema"),
+        ("[test_schema]"),
+        argnames="schema_value",
+    )
+    @testing.variation(
+        "reflection_operation", ["has_table", "reflect_table", "get_columns"]
+    )
+    def test_has_table_with_single_token_schema(
+        self, metadata, connection, schema_value, reflection_operation
+    ):
+        """test for #9133"""
+        tt = Table(
+            "test", metadata, Column("id", Integer), schema=schema_value
+        )
+        tt.create(connection)
+
+        if reflection_operation.has_table:
+            is_true(inspect(connection).has_table("test", schema=schema_value))
+        elif reflection_operation.reflect_table:
+            m2 = MetaData()
+            Table("test", m2, autoload_with=connection, schema=schema_value)
+        elif reflection_operation.get_columns:
+            is_true(
+                inspect(connection).get_columns("test", schema=schema_value)
+            )
+        else:
+            reflection_operation.fail()
+
     def test_db_qualified_items(self, metadata, connection):
         Table("foo", metadata, Column("id", Integer, primary_key=True))
         Table(
@@ -337,6 +468,7 @@ class ReflectionTest(fixtures.TestBase, ComparesTables, AssertsCompiledSQL):
                     "referred_schema": referred_schema,
                     "name": "fkfoo",
                     "constrained_columns": ["foo_id"],
+                    "options": {},
                 }
             ],
         )
@@ -351,6 +483,56 @@ class ReflectionTest(fixtures.TestBase, ComparesTables, AssertsCompiledSQL):
             autoload_with=connection,
         )
         eq_(m2.tables["%s.foo" % referred_schema].schema, referred_schema)
+
+    def test_fk_on_unique_index(self, metadata, connection):
+        # test for issue #7160
+        Table(
+            "uidx_parent",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("uidx_col1", Integer, nullable=False),
+            Column("uidx_col2", Integer, nullable=False),
+            Index(
+                "UIDX_composite",
+                "uidx_col1",
+                "uidx_col2",
+                unique=True,
+            ),
+        )
+
+        Table(
+            "uidx_child",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("parent_uidx_col1", Integer, nullable=False),
+            Column("parent_uidx_col2", Integer, nullable=False),
+            ForeignKeyConstraint(
+                ["parent_uidx_col1", "parent_uidx_col2"],
+                ["uidx_parent.uidx_col1", "uidx_parent.uidx_col2"],
+                name="FK_uidx_parent",
+            ),
+        )
+
+        metadata.create_all(connection)
+
+        inspector = inspect(connection)
+        fk_info = inspector.get_foreign_keys("uidx_child")
+        eq_(
+            fk_info,
+            [
+                {
+                    "referred_table": "uidx_parent",
+                    "referred_columns": ["uidx_col1", "uidx_col2"],
+                    "referred_schema": None,
+                    "name": "FK_uidx_parent",
+                    "constrained_columns": [
+                        "parent_uidx_col1",
+                        "parent_uidx_col2",
+                    ],
+                    "options": {},
+                }
+            ],
+        )
 
     def test_indexes_cols(self, metadata, connection):
 
@@ -665,7 +847,11 @@ class IdentityReflectionTest(fixtures.TablesTest):
                     ),
                 ),
                 Column("id2", Integer, Identity()),
-                Column("id3", sqltypes.BigInteger, Identity()),
+                Column(
+                    "id3",
+                    sqltypes.BigInteger,
+                    Identity(start=-9223372036854775808),
+                ),
                 Column("id4", sqltypes.SmallInteger, Identity()),
                 Column("id5", sqltypes.Numeric, Identity()),
             ]
@@ -687,7 +873,10 @@ class IdentityReflectionTest(fixtures.TablesTest):
                 eq_(type(col["identity"]["start"]), int)
                 eq_(type(col["identity"]["increment"]), int)
             elif col["name"] == "id3":
-                eq_(col["identity"], {"start": 1, "increment": 1})
+                eq_(
+                    col["identity"],
+                    {"start": -9223372036854775808, "increment": 1},
+                )
                 eq_(type(col["identity"]["start"]), util.compat.long_type)
                 eq_(type(col["identity"]["increment"]), util.compat.long_type)
             elif col["name"] == "id4":

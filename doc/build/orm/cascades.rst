@@ -22,7 +22,7 @@ Cascade behavior is configured using the
 :func:`~sqlalchemy.orm.relationship`::
 
     class Order(Base):
-        __tablename__ = 'order'
+        __tablename__ = "order"
 
         items = relationship("Item", cascade="all, delete-orphan")
         customer = relationship("User", cascade="save-update")
@@ -32,11 +32,11 @@ To set cascades on a backref, the same flag can be used with the
 its arguments back into :func:`~sqlalchemy.orm.relationship`::
 
     class Item(Base):
-        __tablename__ = 'item'
+        __tablename__ = "item"
 
-        order = relationship("Order",
-                        backref=backref("items", cascade="all, delete-orphan")
-                    )
+        order = relationship(
+            "Order", backref=backref("items", cascade="all, delete-orphan")
+        )
 
 .. sidebar:: The Origins of Cascade
 
@@ -109,10 +109,10 @@ and added to another::
 
     >>> user1 = sess1.query(User).filter_by(id=1).first()
     >>> address1 = user1.addresses[0]
-    >>> sess1.close()   # user1, address1 no longer associated with sess1
+    >>> sess1.close()  # user1, address1 no longer associated with sess1
     >>> user1.addresses.remove(address1)  # address1 no longer associated with user1
     >>> sess2 = Session()
-    >>> sess2.add(user1)   # ... but it still gets added to the new session,
+    >>> sess2.add(user1)  # ... but it still gets added to the new session,
     >>> address1 in sess2  # because it's still "pending" for flush
     True
 
@@ -226,23 +226,27 @@ The following example adapts that of :ref:`relationships_many_to_many` to
 illustrate the ``cascade="all, delete"`` setting on **one** side of the
 association::
 
-    association_table = Table('association', Base.metadata,
-        Column('left_id', Integer, ForeignKey('left.id')),
-        Column('right_id', Integer, ForeignKey('right.id'))
+    association_table = Table(
+        "association",
+        Base.metadata,
+        Column("left_id", Integer, ForeignKey("left.id")),
+        Column("right_id", Integer, ForeignKey("right.id")),
     )
 
+
     class Parent(Base):
-        __tablename__ = 'left'
+        __tablename__ = "left"
         id = Column(Integer, primary_key=True)
         children = relationship(
             "Child",
             secondary=association_table,
             back_populates="parents",
-            cascade="all, delete"
+            cascade="all, delete",
         )
 
+
     class Child(Base):
-        __tablename__ = 'right'
+        __tablename__ = "right"
         id = Column(Integer, primary_key=True)
         parents = relationship(
             "Parent",
@@ -262,7 +266,7 @@ rules it will also delete all related ``Child`` rows.
     relationships, then the cascade action would continue cascading through all
     ``Parent`` and ``Child`` objects, loading each ``children`` and ``parents``
     collection encountered and deleting everything that's connected.   It is
-    typically not desireable for "delete" cascade to be configured
+    typically not desirable for "delete" cascade to be configured
     bidirectionally.
 
 .. seealso::
@@ -305,18 +309,20 @@ on the relevant ``FOREIGN KEY`` constraint as well::
 
 
     class Parent(Base):
-        __tablename__ = 'parent'
+        __tablename__ = "parent"
         id = Column(Integer, primary_key=True)
         children = relationship(
-            "Child", back_populates="parent",
+            "Child",
+            back_populates="parent",
             cascade="all, delete",
-            passive_deletes=True
+            passive_deletes=True,
         )
 
+
     class Child(Base):
-        __tablename__ = 'child'
+        __tablename__ = "child"
         id = Column(Integer, primary_key=True)
-        parent_id = Column(Integer, ForeignKey('parent.id', ondelete="CASCADE"))
+        parent_id = Column(Integer, ForeignKey("parent.id", ondelete="CASCADE"))
         parent = relationship("Parent", back_populates="children")
 
 The behavior of the above configuration when a parent row is deleted
@@ -455,13 +461,16 @@ on the parent->child side of the relationship, and we can then configure
 ``passive_deletes=True`` on the **other** side of the bidirectional
 relationship as illustrated below::
 
-    association_table = Table('association', Base.metadata,
-        Column('left_id', Integer, ForeignKey('left.id', ondelete="CASCADE")),
-        Column('right_id', Integer, ForeignKey('right.id', ondelete="CASCADE"))
+    association_table = Table(
+        "association",
+        Base.metadata,
+        Column("left_id", Integer, ForeignKey("left.id", ondelete="CASCADE")),
+        Column("right_id", Integer, ForeignKey("right.id", ondelete="CASCADE")),
     )
 
+
     class Parent(Base):
-        __tablename__ = 'left'
+        __tablename__ = "left"
         id = Column(Integer, primary_key=True)
         children = relationship(
             "Child",
@@ -470,14 +479,15 @@ relationship as illustrated below::
             cascade="all, delete",
         )
 
+
     class Child(Base):
-        __tablename__ = 'right'
+        __tablename__ = "right"
         id = Column(Integer, primary_key=True)
         parents = relationship(
             "Parent",
             secondary=association_table,
             back_populates="children",
-            passive_deletes=True
+            passive_deletes=True,
         )
 
 Using the above configuration, the deletion of a ``Parent`` object proceeds
@@ -560,6 +570,8 @@ expunge
 from the :class:`.Session` using :meth:`.Session.expunge`, the
 operation should be propagated down to referred objects.
 
+.. _back_populates_cascade:
+
 .. _backref_cascade:
 
 Controlling Cascade on Backrefs
@@ -576,9 +588,9 @@ default takes place on attribute change events emitted from backrefs.  This is
 probably a confusing statement more easily described through demonstration; it
 means that, given a mapping such as this::
 
-    mapper_registry.map_imperatively(Order, order_table, properties={
-        'items' : relationship(Item, backref='order')
-    })
+    mapper_registry.map_imperatively(
+        Order, order_table, properties={"items": relationship(Item, backref="order")}
+    )
 
 If an ``Order`` is already in the session, and is assigned to the ``order``
 attribute of an ``Item``, the backref appends the ``Item`` to the ``items``
@@ -599,9 +611,11 @@ place::
 
 This behavior can be disabled using the :paramref:`_orm.relationship.cascade_backrefs` flag::
 
-    mapper_registry.map_imperatively(Order, order_table, properties={
-        'items' : relationship(Item, backref='order', cascade_backrefs=False)
-    })
+    mapper_registry.map_imperatively(
+        Order,
+        order_table,
+        properties={"items": relationship(Item, backref="order", cascade_backrefs=False)},
+    )
 
 So above, the assignment of ``i1.order = o1`` will append ``i1`` to the ``items``
 collection of ``o1``, but will not add ``i1`` to the session.   You can, of
@@ -616,11 +630,17 @@ parameter may be set to ``False`` on the backref side by using the
 :func:`_orm.backref` function instead of a string. For example, the above relationship
 could be declared::
 
-    mapper_registry.map_imperatively(Order, order_table, properties={
-        'items' : relationship(
-            Item, backref=backref('order', cascade_backrefs=False), cascade_backrefs=False
-        )
-    })
+    mapper_registry.map_imperatively(
+        Order,
+        order_table,
+        properties={
+            "items": relationship(
+                Item,
+                backref=backref("order", cascade_backrefs=False),
+                cascade_backrefs=False,
+            )
+        },
+    )
 
 This sets the ``cascade_backrefs=False`` behavior on both relationships.
 
@@ -682,12 +702,12 @@ parent collection.  The ``delete-orphan`` cascade accomplishes this, as
 illustrated in the example below::
 
     class User(Base):
-        __tablename__ = 'user'
+        __tablename__ = "user"
 
         # ...
 
-        addresses = relationship(
-            "Address", cascade="all, delete-orphan")
+        addresses = relationship("Address", cascade="all, delete-orphan")
+
 
     # ...
 
@@ -709,9 +729,8 @@ that this related object is not to shared with any other parent simultaneously::
         # ...
 
         preference = relationship(
-            "Preference", cascade="all, delete-orphan",
-            single_parent=True)
-
+            "Preference", cascade="all, delete-orphan", single_parent=True
+        )
 
 Above, if a hypothetical ``Preference`` object is removed from a ``User``,
 it will be deleted on flush::

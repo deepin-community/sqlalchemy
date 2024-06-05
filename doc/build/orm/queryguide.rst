@@ -19,43 +19,43 @@ upon the content at :ref:`tutorial_selecting_data`.
     >>> from sqlalchemy import create_engine
     >>> engine = create_engine("sqlite+pysqlite:///:memory:", echo=True, future=True)
     >>> from sqlalchemy import MetaData, Table, Column, Integer, String
-    >>> metadata = MetaData()
+    >>> metadata_obj = MetaData()
     >>> user_table = Table(
     ...     "user_account",
-    ...     metadata,
-    ...     Column('id', Integer, primary_key=True),
-    ...     Column('name', String(30)),
-    ...     Column('fullname', String)
+    ...     metadata_obj,
+    ...     Column("id", Integer, primary_key=True),
+    ...     Column("name", String(30)),
+    ...     Column("fullname", String),
     ... )
     >>> from sqlalchemy import ForeignKey
     >>> address_table = Table(
     ...     "address",
-    ...     metadata,
-    ...     Column('id', Integer, primary_key=True),
-    ...     Column('user_id', None, ForeignKey('user_account.id')),
-    ...     Column('email_address', String, nullable=False)
+    ...     metadata_obj,
+    ...     Column("id", Integer, primary_key=True),
+    ...     Column("user_id", None, ForeignKey("user_account.id")),
+    ...     Column("email_address", String, nullable=False),
     ... )
     >>> orders_table = Table(
     ...     "user_order",
-    ...     metadata,
-    ...     Column('id', Integer, primary_key=True),
-    ...     Column('user_id', None, ForeignKey('user_account.id')),
-    ...     Column('email_address', String, nullable=False)
+    ...     metadata_obj,
+    ...     Column("id", Integer, primary_key=True),
+    ...     Column("user_id", None, ForeignKey("user_account.id")),
+    ...     Column("email_address", String, nullable=False),
     ... )
     >>> order_items_table = Table(
     ...     "order_items",
-    ...     metadata,
+    ...     metadata_obj,
     ...     Column("order_id", ForeignKey("user_order.id"), primary_key=True),
-    ...     Column("item_id", ForeignKey("item.id"), primary_key=True)
+    ...     Column("item_id", ForeignKey("item.id"), primary_key=True),
     ... )
     >>> items_table = Table(
     ...     "item",
-    ...     metadata,
-    ...     Column('id', Integer, primary_key=True),
-    ...     Column('name', String),
-    ...     Column('description', String)
+    ...     metadata_obj,
+    ...     Column("id", Integer, primary_key=True),
+    ...     Column("name", String),
+    ...     Column("description", String),
     ... )
-    >>> metadata.create_all(engine)
+    >>> metadata_obj.create_all(engine)
     BEGIN (implicit)
     ...
     >>> from sqlalchemy.orm import declarative_base
@@ -68,7 +68,7 @@ upon the content at :ref:`tutorial_selecting_data`.
     ...     orders = relationship("Order")
     ...
     ...     def __repr__(self):
-    ...        return f"User(id={self.id!r}, name={self.name!r}, fullname={self.fullname!r})"
+    ...         return f"User(id={self.id!r}, name={self.name!r}, fullname={self.fullname!r})"
 
     >>> class Address(Base):
     ...     __table__ = address_table
@@ -88,22 +88,34 @@ upon the content at :ref:`tutorial_selecting_data`.
     >>> conn = engine.connect()
     >>> from sqlalchemy.orm import Session
     >>> session = Session(conn)
-    >>> session.add_all([
-    ... User(name="spongebob", fullname="Spongebob Squarepants", addresses=[
-    ...    Address(email_address="spongebob@sqlalchemy.org")
-    ... ]),
-    ... User(name="sandy", fullname="Sandy Cheeks", addresses=[
-    ...    Address(email_address="sandy@sqlalchemy.org"),
-    ...     Address(email_address="squirrel@squirrelpower.org")
-    ...     ]),
-    ...     User(name="patrick", fullname="Patrick Star", addresses=[
-    ...         Address(email_address="pat999@aol.com")
-    ...     ]),
-    ...     User(name="squidward", fullname="Squidward Tentacles", addresses=[
-    ...         Address(email_address="stentcl@sqlalchemy.org")
-    ...     ]),
-    ...     User(name="ehkrabs", fullname="Eugene H. Krabs"),
-    ... ])
+    >>> session.add_all(
+    ...     [
+    ...         User(
+    ...             name="spongebob",
+    ...             fullname="Spongebob Squarepants",
+    ...             addresses=[Address(email_address="spongebob@sqlalchemy.org")],
+    ...         ),
+    ...         User(
+    ...             name="sandy",
+    ...             fullname="Sandy Cheeks",
+    ...             addresses=[
+    ...                 Address(email_address="sandy@sqlalchemy.org"),
+    ...                 Address(email_address="squirrel@squirrelpower.org"),
+    ...             ],
+    ...         ),
+    ...         User(
+    ...             name="patrick",
+    ...             fullname="Patrick Star",
+    ...             addresses=[Address(email_address="pat999@aol.com")],
+    ...         ),
+    ...         User(
+    ...             name="squidward",
+    ...             fullname="Squidward Tentacles",
+    ...             addresses=[Address(email_address="stentcl@sqlalchemy.org")],
+    ...         ),
+    ...         User(name="ehkrabs", fullname="Eugene H. Krabs"),
+    ...     ]
+    ... )
     >>> session.commit()
     BEGIN ...
     >>> conn.begin()
@@ -117,7 +129,7 @@ SELECT statements are produced by the :func:`_sql.select` function which
 returns a :class:`_sql.Select` object::
 
     >>> from sqlalchemy import select
-    >>> stmt = select(User).where(User.name == 'spongebob')
+    >>> stmt = select(User).where(User.name == "spongebob")
 
 To invoke a :class:`_sql.Select` with the ORM, it is passed to
 :meth:`_orm.Session.execute`::
@@ -184,7 +196,7 @@ same time::
     >>> stmt = select(User, Address).join(User.addresses).order_by(User.id, Address.id)
 
     {sql}>>> for row in session.execute(stmt):
-    ...    print(f"{row.User.name} {row.Address.email_address}")
+    ...     print(f"{row.User.name} {row.Address.email_address}")
     SELECT user_account.id, user_account.name, user_account.fullname,
     address.id AS id_1, address.user_id, address.email_address
     FROM user_account JOIN address ON user_account.id = address.user_id
@@ -207,9 +219,9 @@ when passed to :func:`_sql.select`.   They may be used in the same way
 as table columns are used::
 
     {sql}>>> result = session.execute(
-    ...     select(User.name, Address.email_address).
-    ...     join(User.addresses).
-    ...     order_by(User.id, Address.id)
+    ...     select(User.name, Address.email_address)
+    ...     .join(User.addresses)
+    ...     .order_by(User.id, Address.id)
     ... )
     SELECT user_account.name, address.email_address
     FROM user_account JOIN address ON user_account.id = address.user_id
@@ -238,20 +250,18 @@ allows sets of column expressions to be grouped in result rows::
 
     >>> from sqlalchemy.orm import Bundle
     >>> stmt = select(
-    ...     Bundle("user", User.name, User.fullname),
-    ...     Bundle("email", Address.email_address)
+    ...     Bundle("user", User.name, User.fullname), Bundle("email", Address.email_address)
     ... ).join_from(User, Address)
     {sql}>>> for row in session.execute(stmt):
-    ...     print(f"{row.user.name} {row.email.email_address}")
+    ...     print(f"{row.user.name} {row.user.fullname} {row.email.email_address}")
     SELECT user_account.name, user_account.fullname, address.email_address
     FROM user_account JOIN address ON user_account.id = address.user_id
     [...] (){stop}
-    spongebob spongebob@sqlalchemy.org
-    sandy sandy@sqlalchemy.org
-    sandy squirrel@squirrelpower.org
-    patrick pat999@aol.com
-    squidward stentcl@sqlalchemy.org
-
+    spongebob Spongebob Squarepants spongebob@sqlalchemy.org
+    sandy Sandy Cheeks sandy@sqlalchemy.org
+    sandy Sandy Cheeks squirrel@squirrelpower.org
+    patrick Patrick Star pat999@aol.com
+    squidward Squidward Tentacles stentcl@sqlalchemy.org
 
 The :class:`_orm.Bundle` is potentially useful for creating lightweight
 views as well as custom column groupings such as mappings.
@@ -260,6 +270,8 @@ views as well as custom column groupings such as mappings.
 
     :ref:`bundles` - in the ORM loading documentation.
 
+
+.. _orm_queryguide_orm_aliases:
 
 Selecting ORM Aliases
 ^^^^^^^^^^^^^^^^^^^^^
@@ -290,7 +302,9 @@ passed as well::
     spongebob
 
 The :class:`_orm.aliased` construct is also central to making use of subqueries
-with the ORM; the section :ref:`orm_queryguide_subqueries` discusses this further.
+with the ORM; the sections :ref:`orm_queryguide_subqueries` and
+:ref:`orm_queryguide_join_subqueries` discusses this further.
+
 
 .. _orm_queryguide_selecting_text:
 
@@ -372,6 +386,106 @@ perspective.
   method also works with :term:`DML` statements that support RETURNING.
 
 
+.. _orm_queryguide_subqueries:
+
+Selecting Entities from Subqueries
+-----------------------------------
+
+The :func:`_orm.aliased` construct discussed in the previous section
+can be used with any :class:`_sql.Subquery` construct that comes from a
+method such as :meth:`_sql.Select.subquery` to link ORM entities to the
+columns returned by that subquery; there must be a **column correspondence**
+relationship between the columns delivered by the subquery and the columns
+to which the entity is mapped, meaning, the subquery needs to be ultimately
+derived from those entities, such as in the example below::
+
+    >>> inner_stmt = select(User).where(User.id < 7).order_by(User.id)
+    >>> subq = inner_stmt.subquery()
+    >>> aliased_user = aliased(User, subq)
+    >>> stmt = select(aliased_user)
+    >>> for user_obj in session.execute(stmt).scalars():
+    ...     print(user_obj)
+    {opensql} SELECT anon_1.id, anon_1.name, anon_1.fullname
+    FROM (SELECT user_account.id AS id, user_account.name AS name, user_account.fullname AS fullname
+    FROM user_account
+    WHERE user_account.id < ? ORDER BY user_account.id) AS anon_1
+    [generated in ...] (7,)
+    {stop}User(id=1, name='spongebob', fullname='Spongebob Squarepants')
+    User(id=2, name='sandy', fullname='Sandy Cheeks')
+    User(id=3, name='patrick', fullname='Patrick Star')
+    User(id=4, name='squidward', fullname='Squidward Tentacles')
+    User(id=5, name='ehkrabs', fullname='Eugene H. Krabs')
+
+.. seealso::
+
+    :ref:`tutorial_subqueries_orm_aliased` - in the :ref:`unified_tutorial`
+
+    :ref:`orm_queryguide_join_subqueries`
+
+.. _orm_queryguide_unions:
+
+Selecting Entities from UNIONs and other set operations
+--------------------------------------------------------
+
+The :func:`_sql.union` and :func:`_sql.union_all` functions are the most
+common set operations, which along with other set operations such as
+:func:`_sql.except_`, :func:`_sql.intersect` and others deliver an object known as
+a :class:`_sql.CompoundSelect`, which is composed of multiple
+:class:`_sql.Select` constructs joined by a set-operation keyword.   ORM entities may
+be selected from simple compound selects using the :meth:`_sql.Select.from_statement`
+method illustrated previously at :ref:`orm_queryguide_selecting_text`.  In
+this method, the UNION statement is the complete statement that will be
+rendered, no additional criteria can be added after :meth:`_sql.Select.from_statement`
+is used::
+
+    >>> from sqlalchemy import union_all
+    >>> u = union_all(
+    ...     select(User).where(User.id < 2), select(User).where(User.id == 3)
+    ... ).order_by(User.id)
+    >>> stmt = select(User).from_statement(u)
+    >>> for user_obj in session.execute(stmt).scalars():
+    ...     print(user_obj)
+    {opensql}SELECT user_account.id, user_account.name, user_account.fullname
+    FROM user_account
+    WHERE user_account.id < ? UNION ALL SELECT user_account.id, user_account.name, user_account.fullname
+    FROM user_account
+    WHERE user_account.id = ? ORDER BY id
+    [generated in ...] (2, 3)
+    {stop}User(id=1, name='spongebob', fullname='Spongebob Squarepants')
+    User(id=3, name='patrick', fullname='Patrick Star')
+
+A :class:`_sql.CompoundSelect` construct can be more flexibly used within
+a query that can be further modified by organizing it into a subquery
+and linking it to an ORM entity using :func:`_orm.aliased`,
+as illustrated previously at :ref:`orm_queryguide_subqueries`.  In the
+example below, we first use :meth:`_sql.CompoundSelect.subquery` to create
+a subquery of the UNION ALL statement, we then package that into the
+:func:`_orm.aliased` construct where it can be used like any other mapped
+entity in a :func:`_sql.select` construct, including that we can add filtering
+and order by criteria based on its exported columns::
+
+    >>> subq = union_all(
+    ...     select(User).where(User.id < 2), select(User).where(User.id == 3)
+    ... ).subquery()
+    >>> user_alias = aliased(User, subq)
+    >>> stmt = select(user_alias).order_by(user_alias.id)
+    >>> for user_obj in session.execute(stmt).scalars():
+    ...     print(user_obj)
+    {opensql}SELECT anon_1.id, anon_1.name, anon_1.fullname
+    FROM (SELECT user_account.id AS id, user_account.name AS name, user_account.fullname AS fullname
+    FROM user_account
+    WHERE user_account.id < ? UNION ALL SELECT user_account.id AS id, user_account.name AS name, user_account.fullname AS fullname
+    FROM user_account
+    WHERE user_account.id = ?) AS anon_1 ORDER BY anon_1.id
+    [generated in ...] (2, 3)
+    {stop}User(id=1, name='spongebob', fullname='Spongebob Squarepants')
+    User(id=3, name='patrick', fullname='Patrick Star')
+
+
+.. seealso::
+
+    :ref:`tutorial_orm_union` - in the :ref:`unified_tutorial`
+
 .. _orm_queryguide_joins:
 
 Joins
@@ -426,11 +540,7 @@ a JOIN first from ``User`` to ``Order``, and a second from ``Order`` to
 relationship, it results in two separate JOIN elements, for a total of three
 JOIN elements in the resulting SQL::
 
-    >>> stmt = (
-    ...     select(User).
-    ...     join(User.orders).
-    ...     join(Order.items)
-    ... )
+    >>> stmt = select(User).join(User.orders).join(Order.items)
     >>> print(stmt)
     {opensql}SELECT user_account.id, user_account.name, user_account.fullname
     FROM user_account
@@ -454,12 +564,7 @@ as potential points to continue joining FROM.    We can continue to add
 other elements to join FROM the ``User`` entity above, for example adding
 on the ``User.addresses`` relationship to our chain of joins::
 
-    >>> stmt = (
-    ...     select(User).
-    ...     join(User.orders).
-    ...     join(Order.items).
-    ...     join(User.addresses)
-    ... )
+    >>> stmt = select(User).join(User.orders).join(Order.items).join(User.addresses)
     >>> print(stmt)
     {opensql}SELECT user_account.id, user_account.name, user_account.fullname
     FROM user_account
@@ -496,6 +601,8 @@ appropriate constraint to use is ambiguous.
     the entities at the level of the mapped :class:`_schema.Table` objects are consulted
     when an attempt is made to infer an ON clause for the JOIN.
 
+.. _queryguide_join_onclause:
+
 Joins to a Target with an ON Clause
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -503,7 +610,7 @@ The third calling form allows both the target entity as well
 as the ON clause to be passed explicitly.    A example that includes
 a SQL expression as the ON clause is as follows::
 
-    >>> stmt = select(User).join(Address, User.id==Address.user_id)
+    >>> stmt = select(User).join(Address, User.id == Address.user_id)
     >>> print(stmt)
     {opensql}SELECT user_account.id, user_account.name, user_account.fullname
     FROM user_account JOIN address ON user_account.id = address.user_id
@@ -526,11 +633,11 @@ below::
     >>> a1 = aliased(Address)
     >>> a2 = aliased(Address)
     >>> stmt = (
-    ...     select(User).
-    ...     join(a1, User.addresses).
-    ...     join(a2, User.addresses).
-    ...     where(a1.email_address == 'ed@foo.com').
-    ...     where(a2.email_address == 'ed@bar.com')
+    ...     select(User)
+    ...     .join(a1, User.addresses)
+    ...     .join(a2, User.addresses)
+    ...     .where(a1.email_address == "ed@foo.com")
+    ...     .where(a2.email_address == "ed@bar.com")
     ... )
     >>> print(stmt)
     {opensql}SELECT user_account.id, user_account.name, user_account.fullname
@@ -546,11 +653,11 @@ substituted with an aliased entity by using the
 this method would be::
 
     >>> stmt = (
-    ...     select(User).
-    ...     join(User.addresses.of_type(a1)).
-    ...     join(User.addresses.of_type(a2)).
-    ...     where(a1.email_address == 'ed@foo.com').
-    ...     where(a2.email_address == 'ed@bar.com')
+    ...     select(User)
+    ...     .join(User.addresses.of_type(a1))
+    ...     .join(User.addresses.of_type(a2))
+    ...     .where(a1.email_address == "ed@foo.com")
+    ...     .where(a2.email_address == "ed@bar.com")
     ... )
     >>> print(stmt)
     {opensql}SELECT user_account.id, user_account.name, user_account.fullname
@@ -574,10 +681,7 @@ with the default criteria using AND.  Below, the ON criteria between
 by ``AND``, the first one being the natural join along the foreign key,
 and the second being a custom limiting criteria::
 
-    >>> stmt = (
-    ...     select(User).
-    ...     join(User.addresses.and_(Address.email_address != 'foo@bar.com'))
-    ... )
+    >>> stmt = select(User).join(User.addresses.and_(Address.email_address != "foo@bar.com"))
     >>> print(stmt)
     {opensql}SELECT user_account.id, user_account.name, user_account.fullname
     FROM user_account
@@ -589,13 +693,13 @@ and the second being a custom limiting criteria::
     The :meth:`_orm.PropComparator.and_` method also works with loader
     strategies. See the section :ref:`loader_option_criteria` for an example.
 
-.. _orm_queryguide_subqueries:
+.. _orm_queryguide_join_subqueries:
 
 Joining to Subqueries
 ^^^^^^^^^^^^^^^^^^^^^^^
 
 The target of a join may be any "selectable" entity which usefully includes
-subuqeries.   When using the ORM, it is typical
+subqueries.   When using the ORM, it is typical
 that these targets are stated in terms of an
 :func:`_orm.aliased` construct, but this is not strictly required particularly
 if the joined entity is not being returned in the results.  For example, to join from the
@@ -604,11 +708,7 @@ is represented as a row limited subquery, we first construct a :class:`_sql.Subq
 object using :meth:`_sql.Select.subquery`, which may then be used as the
 target of the :meth:`_sql.Select.join` method::
 
-    >>> subq = (
-    ...     select(Address).
-    ...     where(Address.email_address == 'pat999@aol.com').
-    ...     subquery()
-    ... )
+    >>> subq = select(Address).where(Address.email_address == "pat999@aol.com").subquery()
     >>> stmt = select(User).join(subq, User.id == subq.c.user_id)
     >>> print(stmt)
     {opensql}SELECT user_account.id, user_account.name, user_account.fullname
@@ -647,14 +747,14 @@ will remain unique within the statement, while the entities that are linked
 to it using :class:`_orm.aliased` refer to distinct sets of columns::
 
     >>> user_address_subq = (
-    ...        select(User.id, User.name, Address.id, Address.email_address).
-    ...        join_from(User, Address).
-    ...        where(Address.email_address.in_(['pat999@aol.com', 'squirrel@squirrelpower.org'])).
-    ...        subquery()
+    ...     select(User.id, User.name, Address.id, Address.email_address)
+    ...     .join_from(User, Address)
+    ...     .where(Address.email_address.in_(["pat999@aol.com", "squirrel@squirrelpower.org"]))
+    ...     .subquery()
     ... )
     >>> user_alias = aliased(User, user_address_subq, name="user")
     >>> address_alias = aliased(Address, user_address_subq, name="address")
-    >>> stmt = select(user_alias, address_alias).where(user_alias.name == 'sandy')
+    >>> stmt = select(user_alias, address_alias).where(user_alias.name == "sandy")
     >>> for row in session.execute(stmt):
     ...     print(f"{row.user} {row.address}")
     {opensql}SELECT anon_1.id, anon_1.name, anon_1.id_1, anon_1.email_address
@@ -675,7 +775,7 @@ In cases where the left side of the current state of
 :class:`_sql.Select` is not in line with what we want to join from,
 the :meth:`_sql.Select.join_from` method may be used::
 
-    >>> stmt = select(Address).join_from(User, User.addresses).where(User.name == 'sandy')
+    >>> stmt = select(Address).join_from(User, User.addresses).where(User.name == "sandy")
     >>> print(stmt)
     SELECT address.id, address.user_id, address.email_address
     FROM user_account JOIN address ON user_account.id = address.user_id
@@ -685,7 +785,7 @@ The :meth:`_sql.Select.join_from` method accepts two or three arguments, either
 in the form ``<join from>, <onclause>``, or ``<join from>, <join to>,
 [<onclause>]``::
 
-    >>> stmt = select(Address).join_from(User, Address).where(User.name == 'sandy')
+    >>> stmt = select(Address).join_from(User, Address).where(User.name == "sandy")
     >>> print(stmt)
     SELECT address.id, address.user_id, address.email_address
     FROM user_account JOIN address ON user_account.id = address.user_id
@@ -696,7 +796,7 @@ can be used subsequent, the :meth:`_sql.Select.select_from` method may also
 be used::
 
 
-    >>> stmt = select(Address).select_from(User).join(Address).where(User.name == 'sandy')
+    >>> stmt = select(Address).select_from(User).join(Address).where(User.name == "sandy")
     >>> print(stmt)
     SELECT address.id, address.user_id, address.email_address
     FROM user_account JOIN address ON user_account.id = address.user_id
@@ -713,7 +813,7 @@ be used::
     such a :class:`_sql.Join` object.   Therefore we can see the contents
     of :meth:`_sql.Select.select_from` being overridden in a case like this::
 
-        >>> stmt = select(Address).select_from(User).join(Address.user).where(User.name == 'sandy')
+        >>> stmt = select(Address).select_from(User).join(Address.user).where(User.name == "sandy")
         >>> print(stmt)
         SELECT address.id, address.user_id, address.email_address
         FROM address JOIN user_account ON user_account.id = address.user_id
@@ -730,8 +830,10 @@ be used::
         >>>
         >>> j = address_table.join(user_table, user_table.c.id == address_table.c.user_id)
         >>> stmt = (
-        ...     select(address_table).select_from(user_table).select_from(j).
-        ...     where(user_table.c.name == 'sandy')
+        ...     select(address_table)
+        ...     .select_from(user_table)
+        ...     .select_from(j)
+        ...     .where(user_table.c.name == "sandy")
         ... )
         >>> print(stmt)
         SELECT address.id, address.user_id, address.email_address
@@ -891,16 +993,97 @@ The ``autoflush`` execution option is equvialent to the
 
 .. _orm_queryguide_yield_per:
 
-Yield Per
-^^^^^^^^^
+Fetching Large Result Sets with Yield Per
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``yield_per`` execution option is an integer value which will cause the
-:class:`_engine.Result` to yield only a fixed count of rows at a time.  It is
-often useful to use with a result partitioning method such as
-:meth:`_engine.Result.partitions`, e.g.::
+:class:`_engine.Result` to buffer only limited number of rows and/or ORM
+objects at a time, before making data available to the client.
+
+Normally, the ORM will construct ORM objects for **all** rows up front,
+assembling them into a single buffer, before passing this buffer to
+the :class:`_engine.Result` object as a source of rows to be returned.
+The rationale for this behavior is to allow correct behavior
+for features such as joined eager loading, uniquifying of results, and the
+general case of result handling logic that relies upon the identity map
+maintaining a consistent state for every object in a result set as it is
+fetched.
+
+The purpose of the ``yield_per`` option is to change this behavior so that the
+ORM result set is optimized for iteration through very large result sets (> 10K
+rows), where the user has determined that the above patterns don't apply. When
+``yield_per`` is used, the ORM will instead batch ORM results into
+sub-collections and yield rows from each sub-collection individually as the
+:class:`_engine.Result` object is iterated, so that the Python interpreter
+doesn't need to declare very large areas of memory which is both time consuming
+and leads to excessive memory use. The option affects both the way the database
+cursor is used as well as how the ORM constructs rows and objects to be
+passed to the :class:`_engine.Result`.
+
+.. tip::
+
+    From the above, it follows that the :class:`_engine.Result` must be
+    consumed in an iterable fashion, that is, using iteration such as
+    ``for row in result`` or using partial row methods such as
+    :meth:`_engine.Result.fetchmany` or :meth:`_engine.Result.partitions`.
+    Calling :meth:`_engine.Result.all` will defeat the purpose of using
+    ``yield_per``.
+
+Using ``yield_per`` is equivalent to making use
+of both the :paramref:`_engine.Connection.execution_options.stream_results`
+execution option, which selects for server side cursors to be used
+by the backend if supported, and the :meth:`_engine.Result.yield_per` method
+on the returned :class:`_engine.Result` object,
+which establishes a fixed size of rows to be fetched as well as a
+corresponding limit to how many ORM objects will be constructed at once.
+
+.. tip::
+
+    ``yield_per`` is now available as a Core execution option as well,
+    described in detail at :ref:`engine_stream_results`.  This section details
+    the use of ``yield_per`` as an execution option with an ORM
+    :class:`_orm.Session`.  The option behaves as similarly as possible
+    in both contexts.
+
+``yield_per`` when used with the ORM is typically established either
+via the :meth:`.Executable.execution_options` method on the given statement
+or by passing it to the :paramref:`_orm.Session.execute.execution_options`
+parameter of :meth:`_orm.Session.execute` or other similar :class:`_orm.Session`
+method.  In the example below its invoked upon a statement::
 
     >>> stmt = select(User).execution_options(yield_per=10)
-    {sql}>>> for partition in session.execute(stmt).partitions(10):
+    {sql}>>> for row in session.execute(stmt):
+    ...     print(row)
+    SELECT user_account.id, user_account.name, user_account.fullname
+    FROM user_account
+    [...] (){stop}
+    (User(id=1, name='spongebob', fullname='Spongebob Squarepants'),)
+    ...
+
+The above code is mostly equivalent as making use of the
+:paramref:`_engine.Connection.execution_options.stream_results` execution
+option, setting the :paramref:`_engine.Connection.execution_options.max_row_buffer`
+to the given integer size, and then using the :meth:`_engine.Result.yield_per`
+method on the :class:`_engine.Result` returned by the
+:class:`_orm.Session`, as in the following example::
+
+    # equivalent code
+    >>> stmt = select(User).execution_options(stream_results=True, max_row_buffer=10)
+    {sql}>>> for row in session.execute(stmt).yield_per(10):
+    ...     print(row)
+    SELECT user_account.id, user_account.name, user_account.fullname
+    FROM user_account
+    [...] (){stop}
+    (User(id=1, name='spongebob', fullname='Spongebob Squarepants'),)
+    ...
+
+``yield_per`` is also commonly used in combination with the
+:meth:`_engine.Result.partitions` method, that will iterate rows in grouped
+partitions. The size of each partition defaults to the integer value passed to
+``yield_per``, as in the below example::
+
+    >>> stmt = select(User).execution_options(yield_per=10)
+    {sql}>>> for partition in session.execute(stmt).partitions():
     ...     for row in partition:
     ...         print(row)
     SELECT user_account.id, user_account.name, user_account.fullname
@@ -909,24 +1092,12 @@ often useful to use with a result partitioning method such as
     (User(id=1, name='spongebob', fullname='Spongebob Squarepants'),)
     ...
 
-The purpose of this method is when fetching very large result sets
-(> 10K rows), to batch results in sub-collections and yield them
-out partially, so that the Python interpreter doesn't need to declare
-very large areas of memory which is both time consuming and leads
-to excessive memory use.   The performance from fetching hundreds of
-thousands of rows can often double when a suitable yield-per setting
-(e.g. approximately 1000) is used, even with DBAPIs that buffer
-rows (which are most).
-
-When ``yield_per`` is used, the
-:paramref:`_engine.Connection.execution_options.stream_results` option is also
-set for the Core execution, so that a streaming / server side cursor will be
-used if the backend supports it [1]_
-
-The ``yield_per`` execution option **is not compatible with subqueryload eager
-loading or joinedload eager loading when using collections**.  It is
-potentially compatible with selectinload eager loading, **provided the database
-driver supports multiple, independent cursors** [2]_ .
+The ``yield_per`` execution option **is not compatible** with
+:ref:`"subquery" eager loading <subquery_eager_loading>` loading or
+:ref:`"joined" eager loading <joined_eager_loading>` when using collections. It
+is potentially compatible with :ref:`"select in" eager loading
+<selectin_eager_loading>` , provided the database driver supports multiple,
+independent cursors.
 
 Additionally, the ``yield_per`` execution option is not compatible
 with the :meth:`_engine.Result.unique` method; as this method relies upon
@@ -939,20 +1110,10 @@ large number of rows.
    :meth:`_engine.Result.unique` filter, at the same time as the ``yield_per``
    execution option is used.
 
-The ``yield_per`` execution option is equvialent to the
-:meth:`_orm.Query.yield_per` method in :term:`1.x style` ORM queries.
+When using the legacy :class:`_orm.Query` object with
+:term:`1.x style` ORM use, the :meth:`_orm.Query.yield_per` method
+will have the same result as that of the ``yield_per`` execution option.
 
-.. [1] currently known are
-   :mod:`_postgresql.psycopg2`,
-   :mod:`_mysql.mysqldb` and
-   :mod:`_mysql.pymysql`.  Other backends will pre buffer
-   all rows.  The memory use of raw database rows is much less than that of an
-   ORM-mapped object, but should still be taken into consideration when
-   benchmarking.
-
-.. [2] the :mod:`_postgresql.psycopg2`
-   and :mod:`_sqlite.pysqlite` drivers are
-   known to work, drivers for MySQL and SQL Server ODBC drivers do not.
 
 .. seealso::
 
@@ -974,3 +1135,102 @@ matching objects locally present in the :class:`_orm.Session`. See the section
 
     >>> conn.close()
     ROLLBACK
+
+.. _queryguide_inspection:
+
+Inspecting entities and columns from ORM-enabled SELECT and DML statements
+==========================================================================
+
+The :func:`_sql.select` construct, as well as the :func:`_sql.insert`, :func:`_sql.update`
+and :func:`_sql.delete` constructs (for the latter DML constructs, as of SQLAlchemy
+1.4.33), all support the ability to inspect the entities in which these
+statements are created against, as well as the columns and datatypes that would
+be returned in a result set.
+
+For a :class:`.Select` object, this information is available from the
+:attr:`.Select.column_descriptions` attribute. This attribute operates in the
+same way as the legacy :attr:`.Query.column_descriptions` attribute. The format
+returned is a list of dictionaries::
+
+    >>> from pprint import pprint
+    >>> user_alias = aliased(User, name="user2")
+    >>> stmt = select(User, User.id, user_alias)
+    >>> pprint(stmt.column_descriptions)
+    [{'aliased': False,
+        'entity': <class 'User'>,
+        'expr': <class 'User'>,
+        'name': 'User',
+        'type': <class 'User'>},
+        {'aliased': False,
+        'entity': <class 'User'>,
+        'expr': <....InstrumentedAttribute object at ...>,
+        'name': 'id',
+        'type': Integer()},
+        {'aliased': True,
+        'entity': <AliasedClass ...; User>,
+        'expr': <AliasedClass ...; User>,
+        'name': 'user2',
+        'type': <class 'User'>}]
+
+
+When :attr:`.Select.column_descriptions` is used with non-ORM objects
+such as plain :class:`.Table` or :class:`.Column` objects, the entries
+will contain basic information about individual columns returned in all
+cases::
+
+    >>> stmt = select(user_table, address_table.c.id)
+    >>> pprint(stmt.column_descriptions)
+    [{'expr': Column('id', Integer(), table=<user_account>, primary_key=True, nullable=False),
+        'name': 'id',
+        'type': Integer()},
+        {'expr': Column('name', String(length=30), table=<user_account>),
+        'name': 'name',
+        'type': String(length=30)},
+        {'expr': Column('fullname', String(), table=<user_account>),
+        'name': 'fullname',
+        'type': String()},
+        {'expr': Column('id', Integer(), table=<address>, primary_key=True, nullable=False),
+        'name': 'id_1',
+        'type': Integer()}]
+
+.. versionchanged:: 1.4.33 The :attr:`.Select.column_descriptions` attribute now returns
+   a value when used against a :class:`.Select` that is not ORM-enabled.  Previously,
+   this would raise ``NotImplementedError``.
+
+
+For :func:`_sql.insert`, :func:`.update` and :func:`.delete` constructs, there are
+two separate attributes. One is :attr:`.UpdateBase.entity_description` which
+returns information about the primary ORM entity and database table which the
+DML construct would be affecting::
+
+    >>> from sqlalchemy import update
+    >>> stmt = update(User).values(name="somename").returning(User.id)
+    >>> pprint(stmt.entity_description)
+    {'entity': <class 'User'>,
+        'expr': <class 'User'>,
+        'name': 'User',
+        'table': Table('user_account', ...),
+        'type': <class 'User'>}
+
+.. tip::  The :attr:`.UpdateBase.entity_description` includes an entry
+   ``"table"`` which is actually the **table to be inserted, updated or
+   deleted** by the statement, which is **not** always the same as the SQL
+   "selectable" to which the class may be mapped. For example, in a
+   joined-table inheritance scenario, ``"table"`` will refer to the local table
+   for the given entity.
+
+The other is :attr:`.UpdateBase.returning_column_descriptions` which
+delivers information about the columns present in the RETURNING collection
+in a manner roughly similar to that of :attr:`.Select.column_descriptions`::
+
+    >>> pprint(stmt.returning_column_descriptions)
+    [{'aliased': False,
+        'entity': <class 'User'>,
+        'expr': <sqlalchemy.orm.attributes.InstrumentedAttribute ...>,
+        'name': 'id',
+        'type': Integer()}]
+
+.. versionadded:: 1.4.33 Added the :attr:`.UpdateBase.entity_description`
+   and :attr:`.UpdateBase.returning_column_descriptions` attributes.
+
+

@@ -18,7 +18,6 @@ from sqlalchemy import testing
 from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import column_property
 from sqlalchemy.orm import exc as orm_exc
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.persistence import _sort_states
@@ -26,6 +25,8 @@ from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
+from sqlalchemy.testing import is_true
+from sqlalchemy.testing.assertions import expect_raises_message
 from sqlalchemy.testing.assertsql import AllOf
 from sqlalchemy.testing.assertsql import CompiledSQL
 from sqlalchemy.testing.assertsql import Conditional
@@ -61,8 +62,8 @@ class HistoryTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        am = mapper(Address, addresses)
-        m = mapper(
+        am = self.mapper_registry.map_imperatively(Address, addresses)
+        m = self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
@@ -123,7 +124,7 @@ class UnicodeTest(fixtures.MappedTest):
     def test_basic(self):
         Test, uni_t1 = self.classes.Test, self.tables.uni_t1
 
-        mapper(Test, uni_t1)
+        self.mapper_registry.map_imperatively(Test, uni_t1)
 
         txt = ue("\u0160\u0110\u0106\u010c\u017d")
         t1 = Test(id=1, txt=txt)
@@ -143,8 +144,10 @@ class UnicodeTest(fixtures.MappedTest):
             self.classes.Test2,
         )
 
-        mapper(Test, uni_t1, properties={"t2s": relationship(Test2)})
-        mapper(Test2, uni_t2)
+        self.mapper_registry.map_imperatively(
+            Test, uni_t1, properties={"t2s": relationship(Test2)}
+        )
+        self.mapper_registry.map_imperatively(Test2, uni_t2)
 
         txt = ue("\u0160\u0110\u0106\u010c\u017d")
         t1 = Test(txt=txt)
@@ -212,8 +215,10 @@ class UnicodeSchemaTest(fixtures.MappedTest):
         class B(fixtures.ComparableEntity):
             pass
 
-        mapper(A, t1, properties={"t2s": relationship(B)})
-        mapper(B, t2)
+        self.mapper_registry.map_imperatively(
+            A, t1, properties={"t2s": relationship(B)}
+        )
+        self.mapper_registry.map_imperatively(B, t2)
 
         a1 = A()
         b1 = B()
@@ -231,7 +236,7 @@ class UnicodeSchemaTest(fixtures.MappedTest):
 
         new_a1 = (
             session.query(A)
-            .options(sa.orm.joinedload("t2s"))
+            .options(sa.orm.joinedload(A.t2s))
             .filter(t1.c.a == a1.a)
         ).one()
         assert new_a1.a == a1.a
@@ -252,8 +257,12 @@ class UnicodeSchemaTest(fixtures.MappedTest):
         class B(A):
             pass
 
-        mapper(A, t1, polymorphic_on=t1.c.type, polymorphic_identity="a")
-        mapper(B, t2, inherits=A, polymorphic_identity="b")
+        self.mapper_registry.map_imperatively(
+            A, t1, polymorphic_on=t1.c.type, polymorphic_identity="a"
+        )
+        self.mapper_registry.map_imperatively(
+            B, t2, inherits=A, polymorphic_identity="b"
+        )
         a1 = A(b=5)
         b1 = B(e=7)
 
@@ -292,7 +301,7 @@ class BinaryHistTest(fixtures.MappedTest, testing.AssertsExecutionResults):
         # data = b("this is some data")
         data = b"m\x18"  # m\xf2\r\n\x7f\x10'
 
-        mapper(Foo, t1)
+        self.mapper_registry.map_imperatively(Foo, t1)
 
         s = fixture_session()
 
@@ -355,7 +364,7 @@ class PKTest(fixtures.MappedTest):
     def test_primary_key(self):
         Entry, multipk1 = self.classes.Entry, self.tables.multipk1
 
-        mapper(Entry, multipk1)
+        self.mapper_registry.map_imperatively(Entry, multipk1)
 
         e = Entry(name="entry1", value="this is entry 1", multi_rev=2)
 
@@ -364,7 +373,7 @@ class PKTest(fixtures.MappedTest):
         session.flush()
         session.expunge_all()
 
-        e2 = session.query(Entry).get((e.multi_id, 2))
+        e2 = session.get(Entry, (e.multi_id, 2))
         self.assert_(e is not e2)
         state = sa.orm.attributes.instance_state(e)
         state2 = sa.orm.attributes.instance_state(e2)
@@ -374,7 +383,7 @@ class PKTest(fixtures.MappedTest):
     def test_manual_pk(self):
         Entry, multipk2 = self.classes.Entry, self.tables.multipk2
 
-        mapper(Entry, multipk2)
+        self.mapper_registry.map_imperatively(Entry, multipk2)
 
         e = Entry(pk_col_1="pk1", pk_col_2="pk1_related", data="im the data")
 
@@ -385,7 +394,7 @@ class PKTest(fixtures.MappedTest):
     def test_key_pks(self):
         Entry, multipk3 = self.classes.Entry, self.tables.multipk3
 
-        mapper(Entry, multipk3)
+        self.mapper_registry.map_imperatively(Entry, multipk3)
 
         e = Entry(
             primary="pk1",
@@ -440,8 +449,8 @@ class ForeignPKTest(fixtures.MappedTest):
             self.tables.people,
         )
 
-        mapper(PersonSite, peoplesites)
-        m2 = mapper(
+        self.mapper_registry.map_imperatively(PersonSite, peoplesites)
+        m2 = self.mapper_registry.map_imperatively(
             Person, people, properties={"sites": relationship(PersonSite)}
         )
 
@@ -523,9 +532,9 @@ class ClauseAttributesTest(fixtures.MappedTest):
         User, users_t = cls.classes.User, cls.tables.users_t
         HasBoolean, boolean_t = cls.classes.HasBoolean, cls.tables.boolean_t
         PkDefault, pk_t = cls.classes.PkDefault, cls.tables.pk_t
-        mapper(User, users_t)
-        mapper(HasBoolean, boolean_t)
-        mapper(PkDefault, pk_t)
+        cls.mapper_registry.map_imperatively(User, users_t)
+        cls.mapper_registry.map_imperatively(HasBoolean, boolean_t)
+        cls.mapper_registry.map_imperatively(PkDefault, pk_t)
 
     def test_update(self):
         User = self.classes.User
@@ -566,7 +575,7 @@ class ClauseAttributesTest(fixtures.MappedTest):
         self.sql_count_(1, go)
 
         session.expunge_all()
-        u = session.query(User).get(u.id)
+        u = session.get(User, u.id)
         eq_(u.name, "test2")
         eq_(u.counter, 2)
 
@@ -689,8 +698,8 @@ class PassiveDeletesTest(fixtures.MappedTest):
             self.tables.mytable,
         )
 
-        mapper(MyOtherClass, myothertable)
-        mapper(
+        self.mapper_registry.map_imperatively(MyOtherClass, myothertable)
+        self.mapper_registry.map_imperatively(
             MyClass,
             mytable,
             properties={
@@ -716,7 +725,7 @@ class PassiveDeletesTest(fixtures.MappedTest):
                 conn.scalar(select(func.count("*")).select_from(myothertable)),
                 4,
             )
-            mc = session.query(MyClass).get(mc.id)
+            mc = session.get(MyClass, mc.id)
             session.delete(mc)
             session.flush()
 
@@ -744,7 +753,7 @@ class PassiveDeletesTest(fixtures.MappedTest):
             self.tables.mytable,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             MyOtherClass,
             myothertable,
             properties={
@@ -753,7 +762,7 @@ class PassiveDeletesTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(MyClass, mytable)
+        self.mapper_registry.map_imperatively(MyClass, mytable)
 
         session = fixture_session()
         mc = MyClass()
@@ -787,7 +796,7 @@ class PassiveDeletesTest(fixtures.MappedTest):
             self.tables.mytable,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             MyOtherClass,
             myothertable,
             properties={
@@ -796,7 +805,7 @@ class PassiveDeletesTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(MyClass, mytable)
+        self.mapper_registry.map_imperatively(MyClass, mytable)
         sa.orm.configure_mappers()
 
 
@@ -872,8 +881,8 @@ class ExtraPassiveDeletesTest(fixtures.MappedTest):
             self.tables.mytable,
         )
 
-        mapper(MyOtherClass, myothertable)
-        mapper(
+        self.mapper_registry.map_imperatively(MyOtherClass, myothertable)
+        self.mapper_registry.map_imperatively(
             MyClass,
             mytable,
             properties={
@@ -898,7 +907,7 @@ class ExtraPassiveDeletesTest(fixtures.MappedTest):
                 conn.scalar(select(func.count("*")).select_from(myothertable)),
                 4,
             )
-            mc = session.query(MyClass).get(mc.id)
+            mc = session.get(MyClass, mc.id)
             session.delete(mc)
             assert_raises(sa.exc.DBAPIError, session.flush)
 
@@ -910,8 +919,8 @@ class ExtraPassiveDeletesTest(fixtures.MappedTest):
             self.tables.mytable,
         )
 
-        mapper(MyOtherClass, myothertable)
-        mapper(
+        self.mapper_registry.map_imperatively(MyOtherClass, myothertable)
+        self.mapper_registry.map_imperatively(
             MyClass,
             mytable,
             properties={
@@ -934,7 +943,7 @@ class ExtraPassiveDeletesTest(fixtures.MappedTest):
                 1,
             )
 
-            mc = session.query(MyClass).get(mc.id)
+            mc = session.get(MyClass, mc.id)
             session.delete(mc)
             mc.children[0].data = "some new data"
             assert_raises(sa.exc.DBAPIError, session.flush)
@@ -947,8 +956,8 @@ class ExtraPassiveDeletesTest(fixtures.MappedTest):
             self.tables.mytable,
         )
 
-        mapper(MyOtherClass, myothertable)
-        mapper(
+        self.mapper_registry.map_imperatively(MyOtherClass, myothertable)
+        self.mapper_registry.map_imperatively(
             MyClass,
             mytable,
             properties={
@@ -981,8 +990,8 @@ class ExtraPassiveDeletesTest(fixtures.MappedTest):
             self.tables.mytable,
         )
 
-        mapper(MyOtherClass, myothertable)
-        mapper(
+        self.mapper_registry.map_imperatively(MyOtherClass, myothertable)
+        self.mapper_registry.map_imperatively(
             MyClass,
             mytable,
             properties={
@@ -1024,7 +1033,7 @@ class ColumnCollisionTest(fixtures.MappedTest):
         class Book(fixtures.ComparableEntity):
             pass
 
-        mapper(Book, book)
+        self.mapper_registry.map_imperatively(Book, book)
         with fixture_session() as sess:
 
             b1 = Book(book_id="abc", title="def")
@@ -1136,7 +1145,7 @@ class DefaultTest(fixtures.MappedTest):
             self.classes.Hoho,
         )
 
-        mapper(Hoho, default_t)
+        self.mapper_registry.map_imperatively(Hoho, default_t)
 
         h1 = Hoho(hoho=althohoval)
         h2 = Hoho(counter=12)
@@ -1191,7 +1200,7 @@ class DefaultTest(fixtures.MappedTest):
         )
         Secondary = self.classes.Secondary
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Hoho,
             default_t,
             eager_defaults=True,
@@ -1201,7 +1210,9 @@ class DefaultTest(fixtures.MappedTest):
             },
         )
 
-        mapper(Secondary, self.tables.secondary_table)
+        self.mapper_registry.map_imperatively(
+            Secondary, self.tables.secondary_table
+        )
         h1 = Hoho()
 
         session = fixture_session()
@@ -1226,7 +1237,7 @@ class DefaultTest(fixtures.MappedTest):
 
         # populates from the FetchValues explicitly so there is no
         # "post-update"
-        mapper(Hoho, default_t)
+        self.mapper_registry.map_imperatively(Hoho, default_t)
 
         h1 = Hoho(hoho="15", counter=15)
         session = fixture_session()
@@ -1244,7 +1255,7 @@ class DefaultTest(fixtures.MappedTest):
     def test_update(self):
         default_t, Hoho = self.tables.default_t, self.classes.Hoho
 
-        mapper(Hoho, default_t)
+        self.mapper_registry.map_imperatively(Hoho, default_t)
 
         h1 = Hoho()
         session = fixture_session()
@@ -1268,7 +1279,7 @@ class DefaultTest(fixtures.MappedTest):
             self.classes.Secondary,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Hoho,
             default_t,
             properties={
@@ -1277,7 +1288,7 @@ class DefaultTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(Secondary, secondary_table)
+        self.mapper_registry.map_imperatively(Secondary, secondary_table)
 
         h1 = Hoho()
         s1 = Secondary(data="s1")
@@ -1289,17 +1300,17 @@ class DefaultTest(fixtures.MappedTest):
         session.expunge_all()
 
         eq_(
-            session.query(Hoho).get(h1.id),
+            session.get(Hoho, h1.id),
             Hoho(hoho=hohoval, secondaries=[Secondary(data="s1")]),
         )
 
-        h1 = session.query(Hoho).get(h1.id)
+        h1 = session.get(Hoho, h1.id)
         h1.secondaries.append(Secondary(data="s2"))
         session.flush()
         session.expunge_all()
 
         eq_(
-            session.query(Hoho).get(h1.id),
+            session.get(Hoho, h1.id),
             Hoho(
                 hoho=hohoval,
                 secondaries=[Secondary(data="s1"), Secondary(data="s2")],
@@ -1335,7 +1346,7 @@ class ColumnPropertyTest(fixtures.MappedTest):
     def test_refreshes(self):
         Data, data = self.classes.Data, self.tables.data
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Data,
             data,
             properties={
@@ -1349,7 +1360,7 @@ class ColumnPropertyTest(fixtures.MappedTest):
     def test_no_refresh_ro_column_property_no_expire_on_flush(self):
         Data, data = self.classes.Data, self.tables.data
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Data,
             data,
             properties={
@@ -1364,7 +1375,7 @@ class ColumnPropertyTest(fixtures.MappedTest):
     def test_no_refresh_ro_column_property_expire_on_flush(self):
         Data, data = self.classes.Data, self.tables.data
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Data,
             data,
             properties={
@@ -1379,7 +1390,7 @@ class ColumnPropertyTest(fixtures.MappedTest):
     def test_no_refresh_ro_deferred_no_expire_on_flush(self):
         Data, data = self.classes.Data, self.tables.data
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Data,
             data,
             properties={
@@ -1395,7 +1406,7 @@ class ColumnPropertyTest(fixtures.MappedTest):
     def test_no_refresh_ro_deferred_expire_on_flush(self):
         Data, data = self.classes.Data, self.tables.data
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Data,
             data,
             properties={
@@ -1411,7 +1422,7 @@ class ColumnPropertyTest(fixtures.MappedTest):
     def test_refreshes_post_init(self):
         Data, data = self.classes.Data, self.tables.data
 
-        m = mapper(Data, data)
+        m = self.mapper_registry.map_imperatively(Data, data)
         m.add_property(
             "aplusb",
             column_property(data.c.a + literal_column("' '") + data.c.b),
@@ -1428,7 +1439,7 @@ class ColumnPropertyTest(fixtures.MappedTest):
         class SubData(Data):
             pass
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Data,
             data,
             properties={
@@ -1437,7 +1448,7 @@ class ColumnPropertyTest(fixtures.MappedTest):
                 )
             },
         )
-        mapper(SubData, subdata, inherits=Data)
+        self.mapper_registry.map_imperatively(SubData, subdata, inherits=Data)
 
         sess = fixture_session()
         sd1 = SubData(a="hello", b="there", c="hi")
@@ -1503,12 +1514,13 @@ class OneToManyTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
                 addresses=relationship(
-                    mapper(Address, addresses), lazy="select"
+                    self.mapper_registry.map_imperatively(Address, addresses),
+                    lazy="select",
                 )
             ),
         )
@@ -1562,12 +1574,13 @@ class OneToManyTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
                 addresses=relationship(
-                    mapper(Address, addresses), lazy="select"
+                    self.mapper_registry.map_imperatively(Address, addresses),
+                    lazy="select",
                 )
             ),
         )
@@ -1631,12 +1644,13 @@ class OneToManyTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
                 addresses=relationship(
-                    mapper(Address, addresses), lazy="select"
+                    self.mapper_registry.map_imperatively(Address, addresses),
+                    lazy="select",
                 )
             ),
         )
@@ -1657,7 +1671,7 @@ class OneToManyTest(_fixtures.FixtureTest):
         session.flush()
         session.expunge_all()
 
-        u2 = session.query(User).get(u2.id)
+        u2 = session.get(User, u2.id)
         eq_(len(u2.addresses), 1)
 
     def test_child_move_2(self):
@@ -1668,12 +1682,13 @@ class OneToManyTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
                 addresses=relationship(
-                    mapper(Address, addresses), lazy="select"
+                    self.mapper_registry.map_imperatively(Address, addresses),
+                    lazy="select",
                 )
             ),
         )
@@ -1693,7 +1708,7 @@ class OneToManyTest(_fixtures.FixtureTest):
         session.flush()
         session.expunge_all()
 
-        u2 = session.query(User).get(u2.id)
+        u2 = session.get(User, u2.id)
         eq_(len(u2.addresses), 1)
 
     def test_o2m_delete_parent(self):
@@ -1704,12 +1719,14 @@ class OneToManyTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
                 address=relationship(
-                    mapper(Address, addresses), lazy="select", uselist=False
+                    self.mapper_registry.map_imperatively(Address, addresses),
+                    lazy="select",
+                    uselist=False,
                 )
             ),
         )
@@ -1740,12 +1757,14 @@ class OneToManyTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties=dict(
                 address=relationship(
-                    mapper(Address, addresses), lazy="select", uselist=False
+                    self.mapper_registry.map_imperatively(Address, addresses),
+                    lazy="select",
+                    uselist=False,
                 )
             ),
         )
@@ -1771,8 +1790,8 @@ class OneToManyTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        m1 = mapper(User, users)
-        mapper(
+        m1 = self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties=dict(
@@ -1797,8 +1816,8 @@ class OneToManyTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        m2 = mapper(Address, addresses)
-        mapper(
+        m2 = self.mapper_registry.map_imperatively(Address, addresses)
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -1838,7 +1857,7 @@ class SaveTest(_fixtures.FixtureTest):
     def test_basic(self):
         User, users = self.classes.User, self.tables.users
 
-        m = mapper(User, users)
+        m = self.mapper_registry.map_imperatively(User, users)
 
         # save two users
         u = User(name="savetester")
@@ -1849,14 +1868,14 @@ class SaveTest(_fixtures.FixtureTest):
             session.flush()
 
             # assert the first one retrieves the same from the identity map
-            nu = session.query(m).get(u.id)
+            nu = session.get(m, u.id)
             assert u is nu
 
             # clear out the identity map, so next get forces a SELECT
             session.expunge_all()
 
             # check it again, identity should be different but ids the same
-            nu = session.query(m).get(u.id)
+            nu = session.get(m, u.id)
             assert u is not nu and u.id == nu.id and nu.name == "savetester"
 
             session.commit()
@@ -1893,7 +1912,9 @@ class SaveTest(_fixtures.FixtureTest):
 
             syn_name = property(_get_name, _set_name)
 
-        mapper(SUser, users, properties={"syn_name": sa.orm.synonym("name")})
+        self.mapper_registry.map_imperatively(
+            SUser, users, properties={"syn_name": sa.orm.synonym("name")}
+        )
 
         u = SUser(syn_name="some name")
         eq_(u.syn_name, "User:some name:User")
@@ -1921,10 +1942,14 @@ class SaveTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
-            properties={"addresses": relationship(mapper(Address, addresses))},
+            properties={
+                "addresses": relationship(
+                    self.mapper_registry.map_imperatively(Address, addresses)
+                )
+            },
         )
 
         u = User(name="u1")
@@ -1952,14 +1977,14 @@ class SaveTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        m1 = mapper(User, users)
+        m1 = self.mapper_registry.map_imperatively(User, users)
 
         class AddressUser(User):
             pass
 
         # define a mapper for AddressUser that inherits the User.mapper, and
         # joins on the id column
-        mapper(
+        self.mapper_registry.map_imperatively(
             AddressUser,
             addresses,
             inherits=m1,
@@ -1982,7 +2007,7 @@ class SaveTest(_fixtures.FixtureTest):
 
         orders, Order = self.tables.orders, self.classes.Order
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Order,
             orders,
             properties={"description": sa.orm.deferred(orders.c.description)},
@@ -1999,7 +2024,7 @@ class SaveTest(_fixtures.FixtureTest):
         session.commit()
 
         eq_(
-            list(session.execute(orders.select(), mapper=Order)),
+            list(session.execute(orders.select())),
             [(42, None, None, "foo", None)],
         )
         session.expunge_all()
@@ -2014,7 +2039,11 @@ class SaveTest(_fixtures.FixtureTest):
         session.flush()
 
         eq_(
-            list(session.execute(orders.select(), mapper=Order)),
+            list(
+                session.execute(
+                    orders.select(),
+                )
+            ),
             [(42, None, None, "hoho", None)],
         )
 
@@ -2025,7 +2054,11 @@ class SaveTest(_fixtures.FixtureTest):
         o.description = None
         session.flush()
         eq_(
-            list(session.execute(orders.select(), mapper=Order)),
+            list(
+                session.execute(
+                    orders.select(),
+                )
+            ),
             [(42, None, None, None, None)],
         )
         session.close()
@@ -2036,7 +2069,7 @@ class SaveTest(_fixtures.FixtureTest):
     def test_dont_update_blanks(self):
         User, users = self.classes.User, self.tables.users
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
 
         u = User(name="")
         session = fixture_session()
@@ -2044,7 +2077,7 @@ class SaveTest(_fixtures.FixtureTest):
         session.flush()
         session.expunge_all()
 
-        u = session.query(User).get(u.id)
+        u = session.get(User, u.id)
         u.name = ""
         self.sql_count_(0, session.flush)
 
@@ -2065,7 +2098,7 @@ class SaveTest(_fixtures.FixtureTest):
             users, addresses, users.c.id == addresses.c.user_id
         )
 
-        m = mapper(
+        m = self.mapper_registry.map_imperatively(
             User,
             usersaddresses,
             properties=dict(
@@ -2082,7 +2115,7 @@ class SaveTest(_fixtures.FixtureTest):
 
         id_ = m.primary_key_from_instance(u)
 
-        u = session.query(User).get(id_)
+        u = session.get(User, id_)
         assert u.name == "multitester"
 
         conn = session.connection()
@@ -2109,7 +2142,7 @@ class SaveTest(_fixtures.FixtureTest):
         eq_(list(address_rows[0]), [u.id, u.foo_id, "lala@hey.com"])
 
         session.expunge_all()
-        u = session.query(User).get(id_)
+        u = session.get(User, id_)
         assert u.name == "imnew"
 
     def test_history_get(self):
@@ -2122,7 +2155,7 @@ class SaveTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -2131,7 +2164,7 @@ class SaveTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         u = User(name="u1")
         u.addresses.append(Address(email_address="u1@e1"))
@@ -2141,7 +2174,7 @@ class SaveTest(_fixtures.FixtureTest):
         session.flush()
         session.expunge_all()
 
-        u = session.query(User).get(u.id)
+        u = session.get(User, u.id)
         session.delete(u)
         session.flush()
         eq_(
@@ -2172,7 +2205,7 @@ class SaveTest(_fixtures.FixtureTest):
             def after_insert(self, mapper, connection, instance):
                 assert instance is self.current_instance
 
-        mapper(User, users, batch=False)
+        self.mapper_registry.map_imperatively(User, users, batch=False)
 
         evt = Events()
         event.listen(User, "before_insert", evt.before_insert)
@@ -2193,12 +2226,12 @@ class SaveTest(_fixtures.FixtureTest):
         session.flush()
 
         # test insert ordering is maintained
-        assert names == ["user1", "user2", "user4", "user5", "user3"]
+        eq_(names, ["user1", "user2", "user4", "user5", "user3"])
         session.expunge_all()
 
         sa.orm.clear_mappers()
 
-        mapper(User, users)
+        self.mapper_registry.map_imperatively(User, users)
         evt = Events()
         event.listen(User, "before_insert", evt.before_insert)
         event.listen(User, "after_insert", evt.after_insert)
@@ -2220,12 +2253,14 @@ class ManyToOneTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties=dict(
                 user=relationship(
-                    mapper(User, users), lazy="select", uselist=False
+                    self.mapper_registry.map_imperatively(User, users),
+                    lazy="select",
+                    uselist=False,
                 )
             ),
         )
@@ -2302,11 +2337,14 @@ class ManyToOneTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties=dict(
-                user=relationship(mapper(User, users), lazy="select")
+                user=relationship(
+                    self.mapper_registry.map_imperatively(User, users),
+                    lazy="select",
+                )
             ),
         )
 
@@ -2319,15 +2357,15 @@ class ManyToOneTest(_fixtures.FixtureTest):
         session.flush()
         session.expunge_all()
 
-        a1 = session.query(Address).get(a1.id)
-        u1 = session.query(User).get(u1.id)
+        a1 = session.get(Address, a1.id)
+        u1 = session.get(User, u1.id)
         assert a1.user is u1
 
         a1.user = None
         session.flush()
         session.expunge_all()
-        a1 = session.query(Address).get(a1.id)
-        u1 = session.query(User).get(u1.id)
+        a1 = session.get(Address, a1.id)
+        u1 = session.get(User, u1.id)
         assert a1.user is None
 
     def test_many_to_one_2(self):
@@ -2338,11 +2376,14 @@ class ManyToOneTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties=dict(
-                user=relationship(mapper(User, users), lazy="select")
+                user=relationship(
+                    self.mapper_registry.map_imperatively(User, users),
+                    lazy="select",
+                )
             ),
         )
 
@@ -2356,9 +2397,9 @@ class ManyToOneTest(_fixtures.FixtureTest):
         session.flush()
         session.expunge_all()
 
-        a1 = session.query(Address).get(a1.id)
-        a2 = session.query(Address).get(a2.id)
-        u1 = session.query(User).get(u1.id)
+        a1 = session.get(Address, a1.id)
+        a2 = session.get(Address, a2.id)
+        u1 = session.get(User, u1.id)
         assert a1.user is u1
 
         a1.user = None
@@ -2366,9 +2407,9 @@ class ManyToOneTest(_fixtures.FixtureTest):
         session.flush()
         session.expunge_all()
 
-        a1 = session.query(Address).get(a1.id)
-        a2 = session.query(Address).get(a2.id)
-        u1 = session.query(User).get(u1.id)
+        a1 = session.get(Address, a1.id)
+        a2 = session.get(Address, a2.id)
+        u1 = session.get(User, u1.id)
         assert a1.user is None
         assert a2.user is u1
 
@@ -2380,11 +2421,14 @@ class ManyToOneTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties=dict(
-                user=relationship(mapper(User, users), lazy="select")
+                user=relationship(
+                    self.mapper_registry.map_imperatively(User, users),
+                    lazy="select",
+                )
             ),
         )
 
@@ -2398,17 +2442,17 @@ class ManyToOneTest(_fixtures.FixtureTest):
         session.flush()
         session.expunge_all()
 
-        a1 = session.query(Address).get(a1.id)
-        u1 = session.query(User).get(u1.id)
-        u2 = session.query(User).get(u2.id)
+        a1 = session.get(Address, a1.id)
+        u1 = session.get(User, u1.id)
+        u2 = session.get(User, u2.id)
         assert a1.user is u1
 
         a1.user = u2
         session.flush()
         session.expunge_all()
-        a1 = session.query(Address).get(a1.id)
-        u1 = session.query(User).get(u1.id)
-        u2 = session.query(User).get(u2.id)
+        a1 = session.get(Address, a1.id)
+        u1 = session.get(User, u1.id)
+        u2 = session.get(User, u2.id)
         assert a1.user is u2
 
     def test_bidirectional_no_load(self):
@@ -2419,7 +2463,7 @@ class ManyToOneTest(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             User,
             users,
             properties={
@@ -2428,7 +2472,7 @@ class ManyToOneTest(_fixtures.FixtureTest):
                 )
             },
         )
-        mapper(Address, addresses)
+        self.mapper_registry.map_imperatively(Address, addresses)
 
         # try it on unsaved objects
         u1 = User(name="u1")
@@ -2440,13 +2484,13 @@ class ManyToOneTest(_fixtures.FixtureTest):
         session.flush()
         session.expunge_all()
 
-        a1 = session.query(Address).get(a1.id)
+        a1 = session.get(Address, a1.id)
 
         a1.user = None
         session.flush()
         session.expunge_all()
-        assert session.query(Address).get(a1.id).user is None
-        assert session.query(User).get(u1.id).addresses == []
+        assert session.get(Address, a1.id).user is None
+        assert session.get(User, u1.id).addresses == []
 
 
 class ManyToManyTest(_fixtures.FixtureTest):
@@ -2461,9 +2505,9 @@ class ManyToManyTest(_fixtures.FixtureTest):
             self.classes.Item,
         )
 
-        mapper(Keyword, keywords)
+        self.mapper_registry.map_imperatively(Keyword, keywords)
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties=dict(
@@ -2612,8 +2656,8 @@ class ManyToManyTest(_fixtures.FixtureTest):
             self.classes.Item,
         )
 
-        mapper(Keyword, keywords)
-        mapper(
+        self.mapper_registry.map_imperatively(Keyword, keywords)
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties=dict(
@@ -2648,9 +2692,9 @@ class ManyToManyTest(_fixtures.FixtureTest):
             self.classes.Item,
         )
 
-        mapper(Keyword, keywords)
+        self.mapper_registry.map_imperatively(Keyword, keywords)
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties=dict(
@@ -2678,8 +2722,8 @@ class ManyToManyTest(_fixtures.FixtureTest):
             self.classes.Item,
         )
 
-        mapper(Keyword, keywords)
-        mapper(
+        self.mapper_registry.map_imperatively(Keyword, keywords)
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties=dict(
@@ -2709,8 +2753,8 @@ class ManyToManyTest(_fixtures.FixtureTest):
         session.flush()
 
         session.expunge_all()
-        item = session.query(Item).get(item.id)
-        assert item.keywords == [k1, k2]
+        item = session.get(Item, item.id)
+        eq_(item.keywords, [k1, k2])
 
     def test_association(self):
         """Basic test of an association object"""
@@ -2726,9 +2770,9 @@ class ManyToManyTest(_fixtures.FixtureTest):
         class IKAssociation(fixtures.ComparableEntity):
             pass
 
-        mapper(Keyword, keywords)
+        self.mapper_registry.map_imperatively(Keyword, keywords)
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             IKAssociation,
             item_keywords,
             primary_key=[item_keywords.c.item_id, item_keywords.c.keyword_id],
@@ -2747,7 +2791,7 @@ class ManyToManyTest(_fixtures.FixtureTest):
             ),
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties=dict(
@@ -2805,8 +2849,8 @@ class SaveTest2(_fixtures.FixtureTest):
             self.classes.User,
         )
 
-        mapper(User, users)
-        mapper(
+        self.mapper_registry.map_imperatively(User, users)
+        self.mapper_registry.map_imperatively(
             Address,
             addresses,
             properties=dict(
@@ -2922,8 +2966,8 @@ class SaveTest3(fixtures.MappedTest):
             self.classes.Item,
         )
 
-        mapper(Keyword, keywords)
-        mapper(
+        self.mapper_registry.map_imperatively(Keyword, keywords)
+        self.mapper_registry.map_imperatively(
             Item,
             items,
             properties=dict(
@@ -2977,7 +3021,7 @@ class BooleanColTest(fixtures.MappedTest):
         class T(fixtures.ComparableEntity):
             pass
 
-        mapper(T, t1_t)
+        self.mapper_registry.map_imperatively(T, t1_t)
 
         sess = fixture_session()
         t1 = T(value=True, name="t1")
@@ -3017,7 +3061,7 @@ class BooleanColTest(fixtures.MappedTest):
                 [T(value=False, name="t2")],
             )
 
-        t2 = sess.query(T).get(t2.id)
+        t2 = sess.get(T, t2.id)
         t2.value = True
         sess.flush()
         eq_(
@@ -3091,12 +3135,12 @@ class RowSwitchTest(fixtures.MappedTest):
             self.classes.T5,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             T5,
             t5,
             properties={"t6s": relationship(T6, cascade="all, delete-orphan")},
         )
-        mapper(T6, t6)
+        self.mapper_registry.map_imperatively(T6, t6)
 
         sess = fixture_session()
 
@@ -3107,9 +3151,20 @@ class RowSwitchTest(fixtures.MappedTest):
         sess.add(o5)
         sess.flush()
 
-        eq_(list(sess.execute(t5.select(), mapper=T5)), [(1, "some t5")])
         eq_(
-            list(sess.execute(t6.select().order_by(t6.c.id), mapper=T5)),
+            list(
+                sess.execute(
+                    t5.select(),
+                )
+            ),
+            [(1, "some t5")],
+        )
+        eq_(
+            list(
+                sess.execute(
+                    t6.select().order_by(t6.c.id),
+                )
+            ),
             [(1, "some t6", 1), (2, "some other t6", 1)],
         )
 
@@ -3122,9 +3177,20 @@ class RowSwitchTest(fixtures.MappedTest):
         sess.add(o6)
         sess.flush()
 
-        eq_(list(sess.execute(t5.select(), mapper=T5)), [(1, "some other t5")])
         eq_(
-            list(sess.execute(t6.select().order_by(t6.c.id), mapper=T5)),
+            list(
+                sess.execute(
+                    t5.select(),
+                )
+            ),
+            [(1, "some other t5")],
+        )
+        eq_(
+            list(
+                sess.execute(
+                    t6.select().order_by(t6.c.id),
+                )
+            ),
             [(3, "third t6", 1), (4, "fourth t6", 1)],
         )
 
@@ -3137,14 +3203,14 @@ class RowSwitchTest(fixtures.MappedTest):
             self.classes.T7,
         )
 
-        mapper(
+        self.mapper_registry.map_imperatively(
             T5,
             t5,
             properties={
                 "t7s": relationship(T7, secondary=t5t7, cascade="all")
             },
         )
-        mapper(T7, t7)
+        self.mapper_registry.map_imperatively(T7, t7)
 
         sess = fixture_session()
 
@@ -3155,14 +3221,33 @@ class RowSwitchTest(fixtures.MappedTest):
         sess.add(o5)
         sess.flush()
 
-        assert list(sess.execute(t5.select(), mapper=T5)) == [(1, "some t5")]
-        assert testing.rowset(sess.execute(t5t7.select(), mapper=T5)) == set(
-            [(1, 1), (1, 2)]
+        eq_(
+            list(
+                sess.execute(
+                    t5.select(),
+                )
+            ),
+            [(1, "some t5")],
         )
-        assert list(sess.execute(t7.select(), mapper=T5)) == [
-            (1, "some t7"),
-            (2, "some other t7"),
-        ]
+        eq_(
+            testing.rowset(
+                sess.execute(
+                    t5t7.select(),
+                )
+            ),
+            set([(1, 1), (1, 2)]),
+        )
+        eq_(
+            list(
+                sess.execute(
+                    t7.select(),
+                )
+            ),
+            [
+                (1, "some t7"),
+                (2, "some other t7"),
+            ],
+        )
 
         o6 = T5(
             data="some other t5",
@@ -3178,13 +3263,25 @@ class RowSwitchTest(fixtures.MappedTest):
         sess.add(o6)
         sess.flush()
 
-        assert list(sess.execute(t5.select(), mapper=T5)) == [
-            (1, "some other t5")
-        ]
-        assert list(sess.execute(t7.select(), mapper=T5)) == [
-            (3, "third t7"),
-            (4, "fourth t7"),
-        ]
+        eq_(
+            list(
+                sess.execute(
+                    t5.select(),
+                )
+            ),
+            [(1, "some other t5")],
+        )
+        eq_(
+            list(
+                sess.execute(
+                    t7.select(),
+                )
+            ),
+            [
+                (3, "third t7"),
+                (4, "fourth t7"),
+            ],
+        )
 
     def test_manytoone(self):
         t6, T6, t5, T5 = (
@@ -3194,8 +3291,10 @@ class RowSwitchTest(fixtures.MappedTest):
             self.classes.T5,
         )
 
-        mapper(T6, t6, properties={"t5": relationship(T5)})
-        mapper(T5, t5)
+        self.mapper_registry.map_imperatively(
+            T6, t6, properties={"t5": relationship(T5)}
+        )
+        self.mapper_registry.map_imperatively(T5, t5)
 
         sess = fixture_session()
 
@@ -3205,10 +3304,22 @@ class RowSwitchTest(fixtures.MappedTest):
         sess.add(o5)
         sess.flush()
 
-        assert list(sess.execute(t5.select(), mapper=T5)) == [(1, "some t5")]
-        assert list(sess.execute(t6.select(), mapper=T5)) == [
-            (1, "some t6", 1)
-        ]
+        eq_(
+            list(
+                sess.execute(
+                    t5.select(),
+                )
+            ),
+            [(1, "some t5")],
+        )
+        eq_(
+            list(
+                sess.execute(
+                    t6.select(),
+                )
+            ),
+            [(1, "some t6", 1)],
+        )
 
         o6 = T6(data="some other t6", id=1, t5=T5(data="some other t5", id=2))
         sess.delete(o5)
@@ -3216,12 +3327,22 @@ class RowSwitchTest(fixtures.MappedTest):
         sess.add(o6)
         sess.flush()
 
-        assert list(sess.execute(t5.select(), mapper=T5)) == [
-            (2, "some other t5")
-        ]
-        assert list(sess.execute(t6.select(), mapper=T5)) == [
-            (1, "some other t6", 2)
-        ]
+        eq_(
+            list(
+                sess.execute(
+                    t5.select(),
+                )
+            ),
+            [(2, "some other t5")],
+        )
+        eq_(
+            list(
+                sess.execute(
+                    t6.select(),
+                )
+            ),
+            [(1, "some other t6", 2)],
+        )
 
 
 class InheritingRowSwitchTest(fixtures.MappedTest):
@@ -3257,8 +3378,8 @@ class InheritingRowSwitchTest(fixtures.MappedTest):
             self.tables.child,
         )
 
-        mapper(P, parent)
-        mapper(C, child, inherits=P)
+        self.mapper_registry.map_imperatively(P, parent)
+        self.mapper_registry.map_imperatively(C, child, inherits=P)
 
         sess = fixture_session()
         c1 = C(pid=1, cid=1, pdata="c1", cdata="c1")
@@ -3313,7 +3434,7 @@ class PartialNullPKTest(fixtures.MappedTest):
 
     @classmethod
     def setup_mappers(cls):
-        mapper(cls.classes.T1, cls.tables.t1)
+        cls.mapper_registry.map_imperatively(cls.classes.T1, cls.tables.t1)
 
     def test_key_switch(self):
         T1 = self.classes.T1
@@ -3378,6 +3499,103 @@ class PartialNullPKTest(fixtures.MappedTest):
 
         t.col1 = "1"
         s.commit()
+
+
+class NoRowInsertedTest(fixtures.TestBase):
+    """test #7594.
+
+    failure modes when INSERT doesnt actually insert a row.
+    """
+
+    __backend__ = True
+    __requires__ = ("returning",)
+
+    @testing.fixture
+    @testing.skip_if(
+        "+asyncpg",
+        "1.4's asyncpg architecture doesn't let us change parameters",
+    )
+    def null_server_default_fixture(self, registry, connection):
+        @registry.mapped
+        class MyClass(object):
+            __tablename__ = "my_table"
+
+            id = Column(Integer, primary_key=True)
+            data = Column(String(50))
+
+        registry.metadata.create_all(connection)
+
+        @event.listens_for(connection, "before_cursor_execute", retval=True)
+        def revert_insert(
+            conn, cursor, statement, parameters, context, executemany
+        ):
+            if statement.startswith("INSERT"):
+                if statement.endswith("RETURNING my_table.id"):
+                    if executemany:
+                        # remove some rows, so the count is wrong
+                        parameters = parameters[0:1]
+                    else:
+                        # statement should return no rows
+                        statement = (
+                            "UPDATE my_table SET id=NULL WHERE 1!=1 "
+                            "RETURNING my_table.id"
+                        )
+                        parameters = {}
+                else:
+                    assert not testing.against(
+                        "postgresql"
+                    ), "this test has to at least run on PostgreSQL"
+                    testing.config.skip_test(
+                        "backend doesn't support the expected form of "
+                        "RETURNING for this test to work"
+                    )
+            return statement, parameters
+
+        return MyClass
+
+    def test_insert_single_no_pk_correct_exception(
+        self, null_server_default_fixture, connection
+    ):
+        MyClass = null_server_default_fixture
+
+        sess = fixture_session(bind=connection)
+
+        m1 = MyClass(data="data")
+        sess.add(m1)
+
+        with expect_raises_message(
+            orm_exc.FlushError,
+            "Single-row INSERT statement for .*MyClass.* did not produce",
+        ):
+            sess.flush()
+
+        is_true(inspect(m1).transient)
+        sess.rollback()
+        is_true(inspect(m1).transient)
+
+    def test_insert_multi_no_pk_correct_exception(
+        self, null_server_default_fixture, connection
+    ):
+        MyClass = null_server_default_fixture
+
+        sess = fixture_session(bind=connection)
+
+        m1, m2, m3 = MyClass(data="d1"), MyClass(data="d2"), MyClass(data="d3")
+        sess.add_all([m1, m2, m3])
+
+        is_multi_row = connection.dialect.insert_executemany_returning
+        with expect_raises_message(
+            orm_exc.FlushError,
+            "%s INSERT statement for .*MyClass.* did not produce"
+            % ("Multi-row" if is_multi_row else "Single-row"),
+        ):
+            sess.flush()
+
+        for m in m1, m2, m3:
+            is_true(inspect(m).transient)
+        sess.rollback()
+        for m in m1, m2, m3:
+            is_true(inspect(m).transient)
 
 
 class EnsurePKSortableTest(fixtures.MappedTest):
@@ -3466,9 +3684,9 @@ class EnsurePKSortableTest(fixtures.MappedTest):
 
     @classmethod
     def setup_mappers(cls):
-        mapper(cls.classes.T1, cls.tables.t1)
-        mapper(cls.classes.T2, cls.tables.t2)
-        mapper(cls.classes.T3, cls.tables.t3)
+        cls.mapper_registry.map_imperatively(cls.classes.T1, cls.tables.t1)
+        cls.mapper_registry.map_imperatively(cls.classes.T2, cls.tables.t2)
+        cls.mapper_registry.map_imperatively(cls.classes.T3, cls.tables.t3)
 
     def test_exception_persistent_flush_py3k(self):
         s = fixture_session()

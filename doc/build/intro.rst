@@ -22,7 +22,7 @@ Core contains the breadth of SQLAlchemy's SQL and database
 integration and description services, the most prominent part of this
 being the **SQL Expression Language**.
 
-The SQL Expression Language is a toolkit all its own, independent of the ORM
+The SQL Expression Language is a toolkit on its own, independent of the ORM
 package, which provides a system of constructing SQL expressions represented by
 composable objects, which can then be "executed" against a target database
 within the scope of a specific transaction, returning a result set.
@@ -203,8 +203,14 @@ Python prompt like this:
 .. sourcecode:: python+sql
 
      >>> import sqlalchemy
-     >>> sqlalchemy.__version__ # doctest: +SKIP
+     >>> sqlalchemy.__version__  # doctest: +SKIP
      1.4.0
+
+Next Steps
+----------
+
+With SQLAlchemy installed, new and old users alike can
+:ref:`Proceed to the SQLAlchemy Tutorial <unified_tutorial>`.
 
 .. _migration:
 

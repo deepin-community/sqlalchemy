@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: SQLAlchemy
-Version: 1.4.23
+Version: 1.4.50
 Summary: Database Abstraction Library
 Home-page: https://www.sqlalchemy.org
 Author: Mike Bayer
@@ -8,7 +8,6 @@ Author-email: mike_mp@zzzcomputing.com
 License: MIT
 Project-URL: Documentation, https://docs.sqlalchemy.org
 Project-URL: Issue Tracker, https://github.com/sqlalchemy/sqlalchemy/
-Platform: UNKNOWN
 Classifier: Development Status :: 5 - Production/Stable
 Classifier: Intended Audience :: Developers
 Classifier: License :: OSI Approved :: MIT License
@@ -21,6 +20,8 @@ Classifier: Programming Language :: Python :: 3.6
 Classifier: Programming Language :: Python :: 3.7
 Classifier: Programming Language :: Python :: 3.8
 Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
 Classifier: Programming Language :: Python :: Implementation :: CPython
 Classifier: Programming Language :: Python :: Implementation :: PyPy
 Classifier: Topic :: Database :: Front-Ends
@@ -42,6 +43,7 @@ Provides-Extra: postgresql_psycopg2binary
 Provides-Extra: postgresql_psycopg2cffi
 Provides-Extra: pymysql
 Provides-Extra: aiomysql
+Provides-Extra: asyncmy
 Provides-Extra: aiosqlite
 Provides-Extra: sqlcipher
 License-File: LICENSE
@@ -203,6 +205,4 @@ License
 
 SQLAlchemy is distributed under the `MIT license
 <https://www.opensource.org/licenses/mit-license.php>`_.
-
-
 

@@ -12,15 +12,51 @@ As with all SQLAlchemy dialects, all UPPERCASE types that are known to be
 valid with PostgreSQL are importable from the top level dialect, whether
 they originate from :mod:`sqlalchemy.types` or from the local dialect::
 
-    from sqlalchemy.dialects.postgresql import \
-        ARRAY, BIGINT, BIT, BOOLEAN, BYTEA, CHAR, CIDR, DATE, \
-        DOUBLE_PRECISION, ENUM, FLOAT, HSTORE, INET, INTEGER, \
-        INTERVAL, JSON, JSONB, MACADDR, MONEY, NUMERIC, OID, REAL, SMALLINT, TEXT, \
-        TIME, TIMESTAMP, UUID, VARCHAR, INT4RANGE, INT8RANGE, NUMRANGE, \
-        DATERANGE, TSRANGE, TSTZRANGE, TSVECTOR
+    from sqlalchemy.dialects.postgresql import (
+        ARRAY,
+        BIGINT,
+        BIT,
+        BOOLEAN,
+        BYTEA,
+        CHAR,
+        CIDR,
+        DATE,
+        DOUBLE_PRECISION,
+        ENUM,
+        FLOAT,
+        HSTORE,
+        INET,
+        INTEGER,
+        INTERVAL,
+        JSON,
+        JSONB,
+        MACADDR,
+        MACADDR8,
+        MONEY,
+        NUMERIC,
+        OID,
+        REAL,
+        SMALLINT,
+        TEXT,
+        TIME,
+        TIMESTAMP,
+        UUID,
+        VARCHAR,
+        INT4RANGE,
+        INT8RANGE,
+        NUMRANGE,
+        DATERANGE,
+        TSRANGE,
+        TSTZRANGE,
+        TSVECTOR,
+    )
 
 Types which are specific to PostgreSQL, or have PostgreSQL-specific
 construction arguments, are as follows:
+
+.. note: where :noindex: is used, indicates a type that is not redefined
+   in the dialect module, just imported from sqltypes.  this avoids warnings
+   in the sphinx build
 
 .. currentmodule:: sqlalchemy.dialects.postgresql
 
@@ -47,6 +83,7 @@ construction arguments, are as follows:
 
 .. autoclass:: DOUBLE_PRECISION
     :members: __init__
+    :noindex:
 
 
 .. autoclass:: ENUM
@@ -74,14 +111,23 @@ construction arguments, are as follows:
 
 .. autoclass:: MACADDR
 
+.. autoclass:: MACADDR8
+
 .. autoclass:: MONEY
 
 .. autoclass:: OID
 
 .. autoclass:: REAL
     :members: __init__
+    :noindex:
 
 .. autoclass:: REGCLASS
+
+.. autoclass:: TIMESTAMP
+    :members: __init__
+
+.. autoclass:: TIME
+    :members: __init__
 
 .. autoclass:: TSVECTOR
 
@@ -167,16 +213,15 @@ For example::
 
   from sqlalchemy.dialects.postgresql import ExcludeConstraint, TSRANGE
 
+
   class RoomBooking(Base):
 
-      __tablename__ = 'room_booking'
+      __tablename__ = "room_booking"
 
       room = Column(Integer(), primary_key=True)
       during = Column(TSRANGE())
 
-      __table_args__ = (
-          ExcludeConstraint(('room', '='), ('during', '&&')),
-      )
+      __table_args__ = (ExcludeConstraint(("room", "="), ("during", "&&")),)
 
 PostgreSQL DML Constructs
 -------------------------

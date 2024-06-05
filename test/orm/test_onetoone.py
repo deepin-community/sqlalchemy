@@ -2,7 +2,6 @@ from sqlalchemy import ForeignKey
 from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import testing
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import relationship
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing.fixtures import fixture_session
@@ -57,8 +56,8 @@ class O2OTest(fixtures.MappedTest):
             self.classes.Jack,
         )
 
-        mapper(Port, port)
-        mapper(
+        self.mapper_registry.map_imperatively(Port, port)
+        self.mapper_registry.map_imperatively(
             Jack,
             jack,
             properties=dict(
@@ -86,8 +85,8 @@ class O2OTest(fixtures.MappedTest):
         jid = j.id
         pid = p.id
 
-        j = session.query(Jack).get(jid)
-        p = session.query(Port).get(pid)
+        j = session.get(Jack, jid)
+        p = session.get(Port, pid)
         assert p.jack is not None
         assert p.jack is j
         assert j.port is not None
@@ -96,8 +95,8 @@ class O2OTest(fixtures.MappedTest):
 
         session.expunge_all()
 
-        j = session.query(Jack).get(jid)
-        p = session.query(Port).get(pid)
+        j = session.get(Jack, jid)
+        p = session.get(Port, pid)
 
         j.port = None
 
@@ -122,8 +121,8 @@ class O2OTest(fixtures.MappedTest):
             self.classes.Jack,
         )
 
-        mapper(Port, port)
-        mapper(
+        self.mapper_registry.map_imperatively(Port, port)
+        self.mapper_registry.map_imperatively(
             Jack,
             jack,
             properties=dict(
@@ -161,8 +160,8 @@ class O2OTest(fixtures.MappedTest):
             self.classes.Jack,
         )
 
-        mapper(Port, port)
-        mapper(
+        self.mapper_registry.map_imperatively(Port, port)
+        self.mapper_registry.map_imperatively(
             Jack,
             jack,
             properties=dict(

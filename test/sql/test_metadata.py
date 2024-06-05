@@ -41,18 +41,21 @@ from sqlalchemy.sql import naming
 from sqlalchemy.sql import operators
 from sqlalchemy.sql.elements import _NONE_NAME
 from sqlalchemy.sql.elements import literal_column
+from sqlalchemy.sql.schema import RETAIN_SCHEMA
 from sqlalchemy.testing import assert_raises
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import ComparesTables
 from sqlalchemy.testing import emits_warning
 from sqlalchemy.testing import eq_
+from sqlalchemy.testing import eq_ignore_whitespace
 from sqlalchemy.testing import expect_raises_message
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
 from sqlalchemy.testing import is_false
 from sqlalchemy.testing import is_true
 from sqlalchemy.testing import mock
+from sqlalchemy.testing.assertions import expect_warnings
 
 
 class MetaDataTest(fixtures.TestBase, ComparesTables):
@@ -759,7 +762,10 @@ class MetaDataTest(fixtures.TestBase, ComparesTables):
                 "%s"
                 ", name='someconstraint')" % repr(ck.sqltext),
             ),
-            (ColumnDefault(("foo", "bar")), "ColumnDefault(('foo', 'bar'))"),
+            (
+                ColumnDefault(("foo", "bar")),
+                "ColumnDefault(('foo', 'bar'))",
+            ),
         ):
             eq_(repr(const), exp)
 
@@ -916,6 +922,46 @@ class ToMetaDataTest(fixtures.TestBase, AssertsCompiledSQL, ComparesTables):
         b2 = b.to_metadata(m2)
         a2 = a.to_metadata(m2)
         assert b2.c.y.references(a2.c.x)
+
+    def test_fk_w_no_colname(self):
+        """test a ForeignKey that refers to table name only.  the column
+        name is assumed to be the same col name on parent table.
+
+        this is a little used feature from long ago that nonetheless is
+        still in the code.
+
+        The feature was found to be not working but is repaired for
+        SQLAlchemy 2.0.
+
+        """
+        m1 = MetaData()
+        a = Table("a", m1, Column("x", Integer))
+        b = Table("b", m1, Column("x", Integer, ForeignKey("a")))
+        assert b.c.x.references(a.c.x)
+
+        m2 = MetaData()
+        b2 = b.to_metadata(m2)
+        a2 = a.to_metadata(m2)
+        assert b2.c.x.references(a2.c.x)
+
+    def test_fk_w_no_colname_name_missing(self):
+        """test a ForeignKey that refers to table name only.  the column
+        name is assumed to be the same col name on parent table.
+
+        this is a little used feature from long ago that nonetheless is
+        still in the code.
+
+        """
+        m1 = MetaData()
+        a = Table("a", m1, Column("x", Integer))
+        b = Table("b", m1, Column("y", Integer, ForeignKey("a")))
+
+        with expect_raises_message(
+            exc.NoReferencedColumnError,
+            "Could not initialize target column for ForeignKey 'a' on "
+            "table 'b': table 'a' has no column named 'y'",
+        ):
+            assert b.c.y.references(a.c.x)
 
     def test_column_collection_constraint_w_ad_hoc_columns(self):
         """Test ColumnCollectionConstraint that has columns that aren't
@@ -1272,6 +1318,27 @@ class ToMetaDataTest(fixtures.TestBase, AssertsCompiledSQL, ComparesTables):
             return "h"
 
         self._assert_fk(t2, "z", "h.t1.x", referred_schema_fn=ref_fn)
+
+    def test_fk_reset_to_none(self):
+        m = MetaData()
+
+        t2 = Table("t2", m, Column("y", Integer, ForeignKey("p.t1.x")))
+
+        def ref_fn(table, to_schema, constraint, referred_schema):
+            return BLANK_SCHEMA
+
+        self._assert_fk(t2, None, "t1.x", referred_schema_fn=ref_fn)
+
+    @testing.combinations(None, RETAIN_SCHEMA)
+    def test_fk_test_non_return_for_referred_schema(self, sym):
+        m = MetaData()
+
+        t2 = Table("t2", m, Column("y", Integer, ForeignKey("p.t1.x")))
+
+        def ref_fn(table, to_schema, constraint, referred_schema):
+            return sym
+
+        self._assert_fk(t2, None, "p.t1.x", referred_schema_fn=ref_fn)
 
     def test_copy_info(self):
         m = MetaData()
@@ -1824,32 +1891,35 @@ class TableTest(fixtures.TestBase, AssertsCompiledSQL):
 
     def test_pk_col_mismatch_one(self):
         m = MetaData()
-        assert_raises_message(
-            exc.SAWarning,
+
+        with expect_warnings(
             "Table 't' specifies columns 'x' as primary_key=True, "
-            "not matching locally specified columns 'q'",
-            Table,
-            "t",
-            m,
-            Column("x", Integer, primary_key=True),
-            Column("q", Integer),
-            PrimaryKeyConstraint("q"),
-        )
+            "not matching locally specified columns 'q'"
+        ):
+            Table(
+                "t",
+                m,
+                Column("x", Integer, primary_key=True),
+                Column("q", Integer),
+                PrimaryKeyConstraint("q"),
+            )
 
     def test_pk_col_mismatch_two(self):
         m = MetaData()
-        assert_raises_message(
-            exc.SAWarning,
+
+        with expect_warnings(
             "Table 't' specifies columns 'a', 'b', 'c' as primary_key=True, "
-            "not matching locally specified columns 'b', 'c'",
-            Table,
-            "t",
-            m,
-            Column("a", Integer, primary_key=True),
-            Column("b", Integer, primary_key=True),
-            Column("c", Integer, primary_key=True),
-            PrimaryKeyConstraint("b", "c"),
-        )
+            "not matching locally specified columns 'b', 'c'"
+        ):
+
+            Table(
+                "t",
+                m,
+                Column("a", Integer, primary_key=True),
+                Column("b", Integer, primary_key=True),
+                Column("c", Integer, primary_key=True),
+                PrimaryKeyConstraint("b", "c"),
+            )
 
     @testing.emits_warning("Table 't'")
     def test_pk_col_mismatch_three(self):
@@ -1922,6 +1992,31 @@ class TableTest(fixtures.TestBase, AssertsCompiledSQL):
             exc.InvalidRequestError, "Table 'foo' not defined"
         ):
             Table("foo", MetaData(), must_exist=True)
+
+    @testing.combinations(
+        ("comment", ("A", "B", "A")),
+        ("implicit_returning", (True, False, True)),
+        ("info", ({"A": 1}, {"A": 2}, {"A": 1})),
+    )
+    def test_extend_attributes(self, attrib, attrib_values):
+        """
+        ensure `extend_existing` is compatible with simple attributes
+        """
+        metadata = MetaData()
+        for counter, _attrib_value in enumerate(attrib_values):
+            _extend_existing = True if (counter > 0) else False
+            _kwargs = {
+                "extend_existing": _extend_existing,
+                attrib: _attrib_value,
+            }
+            table_a = Table(
+                "a",
+                metadata,
+                Column("foo", String, primary_key=True),
+                **_kwargs
+            )
+            eq_(getattr(table_a, attrib), _attrib_value)
+            eq_(getattr(metadata.tables["a"], attrib), _attrib_value)
 
 
 class PKAutoIncrementTest(fixtures.TestBase):
@@ -2499,6 +2594,52 @@ class SchemaTest(fixtures.TestBase, AssertsCompiledSQL):
         t1 = Table("t1", m, Column("x", Integer), schema="bar")
         t2 = Table("t2", m, Column("x", Integer, ForeignKey("bar.t1.x")))
         assert t2.c.x.references(t1.c.x)
+
+    @testing.combinations(
+        (schema.CreateSchema("sa_schema"), "CREATE SCHEMA sa_schema"),
+        (schema.DropSchema("sa_schema"), "DROP SCHEMA sa_schema"),
+        # note we don't yet support lower-case table() or
+        # lower-case column() for this
+        # (
+        #    schema.CreateTable(table("t", column("q", Integer))),
+        #    "CREATE TABLE t (q INTEGER)",
+        # ),
+        (
+            schema.CreateTable(Table("t", MetaData(), Column("q", Integer))),
+            "CREATE TABLE t (q INTEGER)",
+        ),
+        (
+            schema.DropTable(Table("t", MetaData(), Column("q", Integer))),
+            "DROP TABLE t",
+        ),
+        (
+            schema.CreateIndex(
+                Index(
+                    "foo",
+                    "x",
+                    _table=Table("t", MetaData(), Column("x", Integer)),
+                )
+            ),
+            "CREATE INDEX foo ON t (x)",
+        ),
+        (
+            schema.DropIndex(
+                Index(
+                    "foo",
+                    "x",
+                    _table=Table("t", MetaData(), Column("x", Integer)),
+                )
+            ),
+            "DROP INDEX foo",
+        ),
+        (
+            schema.CreateSequence(Sequence("my_seq")),
+            "CREATE SEQUENCE my_seq START WITH 1",
+        ),
+        (schema.DropSequence(Sequence("my_seq")), "DROP SEQUENCE my_seq"),
+    )
+    def test_stringify_schema_elements(self, element, expected):
+        eq_ignore_whitespace(str(element), expected)
 
     def test_create_drop_schema(self):
 
@@ -5251,6 +5392,29 @@ class NamingConventionTest(fixtures.TestBase, AssertsCompiledSQL):
         )
         a1.append_constraint(fk)
         eq_(fk.name, "fk_address_user_id_user_id")
+
+    @testing.combinations(True, False, argnames="col_has_type")
+    def test_fk_ref_local_referent_has_no_type(self, col_has_type):
+        """test #7958"""
+
+        metadata = MetaData(
+            naming_convention={
+                "fk": "fk_%(referred_column_0_name)s",
+            }
+        )
+        Table("a", metadata, Column("id", Integer, primary_key=True))
+        b = Table(
+            "b",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("aid", ForeignKey("a.id"))
+            if not col_has_type
+            else Column("aid", Integer, ForeignKey("a.id")),
+        )
+        fks = list(
+            c for c in b.constraints if isinstance(c, ForeignKeyConstraint)
+        )
+        eq_(fks[0].name, "fk_id")
 
     def test_custom(self):
         def key_hash(const, table):

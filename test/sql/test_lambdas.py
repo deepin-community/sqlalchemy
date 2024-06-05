@@ -8,6 +8,7 @@ from sqlalchemy.sql import and_
 from sqlalchemy.sql import bindparam
 from sqlalchemy.sql import coercions
 from sqlalchemy.sql import column
+from sqlalchemy.sql import func
 from sqlalchemy.sql import join
 from sqlalchemy.sql import lambda_stmt
 from sqlalchemy.sql import lambdas
@@ -17,6 +18,7 @@ from sqlalchemy.sql import roles
 from sqlalchemy.sql import select
 from sqlalchemy.sql import table
 from sqlalchemy.sql import util as sql_util
+from sqlalchemy.sql.base import ExecutableOption
 from sqlalchemy.sql.traversals import HasCacheKey
 from sqlalchemy.testing import assert_raises_message
 from sqlalchemy.testing import AssertsCompiledSQL
@@ -26,8 +28,10 @@ from sqlalchemy.testing import is_
 from sqlalchemy.testing import ne_
 from sqlalchemy.testing.assertions import expect_raises_message
 from sqlalchemy.testing.assertsql import CompiledSQL
+from sqlalchemy.types import ARRAY
 from sqlalchemy.types import Boolean
 from sqlalchemy.types import Integer
+from sqlalchemy.types import JSON
 from sqlalchemy.types import String
 
 
@@ -35,6 +39,26 @@ class LambdaElementTest(
     fixtures.TestBase, testing.AssertsExecutionResults, AssertsCompiledSQL
 ):
     __dialect__ = "default"
+
+    def test_reject_methods(self):
+        """test #7032"""
+
+        t1 = table("t1", column("q"), column("p"))
+
+        subq = select(t1).subquery
+
+        with expect_raises_message(
+            exc.ArgumentError,
+            "Method <bound method Select.*.subquery .* may not be "
+            "passed as a SQL expression",
+        ):
+            select(func.count()).select_from(subq)
+
+        self.assert_compile(
+            select(func.count()).select_from(subq()),
+            "SELECT count(*) AS count_1 FROM "
+            "(SELECT t1.q AS q, t1.p AS p FROM t1) AS anon_1",
+        )
 
     def test_select_whereclause(self):
         t1 = table("t1", column("q"), column("p"))
@@ -151,7 +175,7 @@ class LambdaElementTest(
             asserter_.assert_(
                 CompiledSQL(
                     "SELECT users.id FROM users WHERE users.name "
-                    "IN ([POSTCOMPILE_val_1]) ORDER BY users.id",
+                    "IN (__[POSTCOMPILE_val_1]) ORDER BY users.id",
                     params={"val_1": case},
                 )
             )
@@ -809,7 +833,10 @@ class LambdaElementTest(
 
         stmt = lambdas.lambda_stmt(lambda: select(column("x")))
 
-        opts = {column("x"), column("y")}
+        class MyUncacheable(ExecutableOption):
+            pass
+
+        opts = {MyUncacheable()}
 
         assert_raises_message(
             exc.InvalidRequestError,
@@ -941,11 +968,18 @@ class LambdaElementTest(
 
             return stmt
 
-        s1 = go([column("a"), column("b")])
+        class SomeOpt(HasCacheKey, ExecutableOption):
+            def __init__(self, x):
+                self.x = x
 
-        s2 = go([column("a"), column("b")])
+            def _gen_cache_key(self, anon_map, bindparams):
+                return (SomeOpt, self.x)
 
-        s3 = go([column("q"), column("b")])
+        s1 = go([SomeOpt("a"), SomeOpt("b")])
+
+        s2 = go([SomeOpt("a"), SomeOpt("b")])
+
+        s3 = go([SomeOpt("q"), SomeOpt("b")])
 
         s1key = s1._generate_cache_key()
         s2key = s2._generate_cache_key()
@@ -963,7 +997,7 @@ class LambdaElementTest(
 
             return stmt
 
-        class SomeOpt(HasCacheKey):
+        class SomeOpt(HasCacheKey, ExecutableOption):
             def _gen_cache_key(self, anon_map, bindparams):
                 return ("fixed_key",)
 
@@ -993,8 +1027,8 @@ class LambdaElementTest(
 
             return stmt
 
-        class SomeOpt(HasCacheKey):
-            pass
+        class SomeOpt(HasCacheKey, ExecutableOption):
+            inherit_cache = False
 
         # generates no key, will not be cached
         eq_(SomeOpt()._generate_cache_key(), None)
@@ -1129,7 +1163,7 @@ class LambdaElementTest(
     def test_in_parameters_one(self):
 
         expr1 = select(1).where(column("q").in_(["a", "b", "c"]))
-        self.assert_compile(expr1, "SELECT 1 WHERE q IN ([POSTCOMPILE_q_1])")
+        self.assert_compile(expr1, "SELECT 1 WHERE q IN (__[POSTCOMPILE_q_1])")
 
         self.assert_compile(
             expr1,
@@ -1140,7 +1174,7 @@ class LambdaElementTest(
 
     def test_in_parameters_two(self):
         expr2 = select(1).where(lambda: column("q").in_(["a", "b", "c"]))
-        self.assert_compile(expr2, "SELECT 1 WHERE q IN ([POSTCOMPILE_q_1])")
+        self.assert_compile(expr2, "SELECT 1 WHERE q IN (__[POSTCOMPILE_q_1])")
         self.assert_compile(
             expr2,
             "SELECT 1 WHERE q IN (:q_1_1, :q_1_2, :q_1_3)",
@@ -1152,7 +1186,7 @@ class LambdaElementTest(
         expr3 = lambdas.lambda_stmt(
             lambda: select(1).where(column("q").in_(["a", "b", "c"]))
         )
-        self.assert_compile(expr3, "SELECT 1 WHERE q IN ([POSTCOMPILE_q_1])")
+        self.assert_compile(expr3, "SELECT 1 WHERE q IN (__[POSTCOMPILE_q_1])")
         self.assert_compile(
             expr3,
             "SELECT 1 WHERE q IN (:q_1_1, :q_1_2, :q_1_3)",
@@ -1168,7 +1202,7 @@ class LambdaElementTest(
 
         expr4 = go(["a", "b", "c"])
         self.assert_compile(
-            expr4, "SELECT 1 WHERE q IN ([POSTCOMPILE_names_1])"
+            expr4, "SELECT 1 WHERE q IN (__[POSTCOMPILE_names_1])"
         )
         self.assert_compile(
             expr4,
@@ -1180,9 +1214,9 @@ class LambdaElementTest(
     def test_in_parameters_five(self):
         def go(n1, n2):
             stmt = lambdas.lambda_stmt(
-                lambda: select(1).where(column("q").in_(n1))
+                lambda: select(1).where(column("q", ARRAY(String)).in_(n1))
             )
-            stmt += lambda s: s.where(column("y").in_(n2))
+            stmt += lambda s: s.where(column("y", ARRAY(String)).in_(n2))
             return stmt
 
         expr = go(["a", "b", "c"], ["d", "e", "f"])
@@ -1478,6 +1512,107 @@ class LambdaElementTest(
         expr = coercions.expect(roles.WhereHavingRole, mylambda)
         self.assert_compile(
             expr, "users.name || :x_1", checkparams={"x_1": "bar"}
+        )
+
+    def test_rhs_type_detection_from_left(self):
+        """test #9029"""
+        tt = table("tt", column("q", JSON))
+
+        x = {"foo": "bar"}
+
+        def mylambda():
+            return tt.c.q + x
+
+        expr = coercions.expect(roles.WhereHavingRole, mylambda)
+        is_(expr._resolved.right.type._type_affinity, JSON)
+
+    def test_rhs_type_detection_standalone(self):
+        """test related to #9029, as type coercion rule was changed"""
+
+        x = 5
+
+        def mylambda():
+            return x
+
+        expr = coercions.expect(roles.OrderByRole, mylambda)
+        is_(expr._resolved.type._type_affinity, Integer)
+
+        x = "now im a string"
+
+        # stays as int b.c. _resolved is cached
+        is_(expr._resolved.type._type_affinity, Integer)
+
+        # make a new one!  now it will be string
+        expr = coercions.expect(roles.OrderByRole, mylambda)
+        is_(expr._resolved.type._type_affinity, String)
+
+    @testing.only_on("sqlite")
+    @testing.variation("stmt_type", ["lambda_stmt", "lambda_crit"])
+    @testing.variation("callable_type", ["none", "closure", "parameter"])
+    def test_9029_integration(
+        self, metadata, connection, stmt_type, callable_type
+    ):
+        t = Table(
+            "t",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("data", JSON),
+        )
+
+        t.create(connection)
+
+        connection.execute(
+            t.insert(),
+            {
+                "id": 12,
+                "data": {"key": "value", "key2": {"subkey": [1, 2, 3]}},
+            },
+        )
+
+        d = {"key": "value", "key2": {"subkey": [1, 2, 3]}}
+
+        if callable_type.none:
+            if stmt_type.lambda_stmt:
+                stmt = lambda_stmt(lambda: select(t).filter(t.c.data == d))
+            elif stmt_type.lambda_crit:
+                stmt = select(t).filter(lambda: t.c.data == d)
+            else:
+                stmt_type.fail()
+
+            to_run = stmt
+
+        elif callable_type.closure:
+
+            def go():
+                if stmt_type.lambda_stmt:
+                    stmt = lambda_stmt(lambda: select(t).filter(t.c.data == d))
+                elif stmt_type.lambda_crit:
+                    stmt = select(t).filter(lambda: t.c.data == d)
+                else:
+                    stmt_type.fail()
+                return stmt
+
+            to_run = go()
+
+        elif callable_type.parameter:
+
+            def go(data):
+                if stmt_type.lambda_stmt:
+                    stmt = lambda_stmt(
+                        lambda: select(t).filter(t.c.data == data)
+                    )
+                elif stmt_type.lambda_crit:
+                    stmt = select(t).filter(lambda: t.c.data == data)
+                else:
+                    stmt_type.fail()
+
+                return stmt
+
+            to_run = go(d)
+
+        eq_(
+            connection.execute(to_run).first(),
+            (12, {"key": "value", "key2": {"subkey": [1, 2, 3]}}),
         )
 
     def test_execute_constructed_uncached(self, user_address_fixture):
@@ -1820,7 +1955,7 @@ class DeferredLambdaElementTest(
             opts=lambdas.LambdaOptions(track_closure_variables=False),
         )
 
-        self.assert_compile(elem.expr, "t1.q IN ([POSTCOMPILE_vv_1])")
+        self.assert_compile(elem.expr, "t1.q IN (__[POSTCOMPILE_vv_1])")
 
         assert_raises_message(
             exc.InvalidRequestError,

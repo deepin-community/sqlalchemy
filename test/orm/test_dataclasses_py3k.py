@@ -9,7 +9,6 @@ from sqlalchemy import String
 from sqlalchemy import testing
 from sqlalchemy.orm import clear_mappers
 from sqlalchemy.orm import declared_attr
-from sqlalchemy.orm import mapper
 from sqlalchemy.orm import registry as declarative_registry
 from sqlalchemy.orm import registry
 from sqlalchemy.orm import relationship
@@ -88,19 +87,21 @@ class DataclassesTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
         Widget = cls.classes.Widget
         SpecialWidget = cls.classes.SpecialWidget
 
-        mapper(
+        cls.mapper_registry.map_imperatively(
             Widget,
             widgets,
             polymorphic_on=widgets.c.type,
             polymorphic_identity="normal",
         )
-        mapper(
+        cls.mapper_registry.map_imperatively(
             SpecialWidget,
             widgets,
             inherits=Widget,
             polymorphic_identity="special",
         )
-        mapper(Account, accounts, properties={"widgets": relationship(Widget)})
+        cls.mapper_registry.map_imperatively(
+            Account, accounts, properties={"widgets": relationship(Widget)}
+        )
 
     def check_account_dataclass(self, obj):
         assert dataclasses.is_dataclass(obj)
@@ -194,7 +195,7 @@ class DataclassesTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
             session.commit()
 
         with fixture_session() as session:
-            a = session.query(Account).get(42)
+            a = session.get(Account, 42)
             self.check_data_fixture(a)
 
     def test_appending_to_relationship(self):
@@ -207,7 +208,7 @@ class DataclassesTest(fixtures.MappedTest, testing.AssertsCompiledSQL):
             account.add_widget(Widget("Xyzzy"))
 
         with Session(testing.db) as session:
-            a = session.query(Account).get(42)
+            a = session.get(Account, 42)
             eq_(a.widget_count, 3)
             eq_(len(a.widgets), 3)
 

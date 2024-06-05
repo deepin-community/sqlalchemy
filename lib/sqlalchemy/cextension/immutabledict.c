@@ -1,6 +1,6 @@
 /*
 immuatbledict.c
-Copyright (C) 2005-2021 the SQLAlchemy authors and contributors <see AUTHORS file>
+Copyright (C) 2005-2023 the SQLAlchemy authors and contributors <see AUTHORS file>
 
 This module is part of SQLAlchemy and is released under
 the MIT License: https://www.opensource.org/licenses/mit-license.php
@@ -173,7 +173,7 @@ ImmutableDict_union(PyObject *self, PyObject *args, PyObject *kw)
     }
 
     if (!PyDict_CheckExact(arg_dict)) {
-        // if we didnt get a dict, and got lists of tuples or
+        // if we didn't get a dict, and got lists of tuples or
         // keyword args, make a dict
         arg_dict = PyObject_Call((PyObject *) &PyDict_Type, args, kw);
         if (arg_dict == NULL) {
