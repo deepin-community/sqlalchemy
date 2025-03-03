@@ -44,30 +44,40 @@ construction arguments, are as follows:
 .. autoclass:: BFILE
   :members: __init__
 
+.. autoclass:: BINARY_DOUBLE
+  :members: __init__
+
+.. autoclass:: BINARY_FLOAT
+  :members: __init__
+
 .. autoclass:: DATE
    :members: __init__
 
-.. autoclass:: DOUBLE_PRECISION
+.. autoclass:: FLOAT
    :members: __init__
-
 
 .. autoclass:: INTERVAL
   :members: __init__
 
-
 .. autoclass:: NCLOB
   :members: __init__
 
+.. autoclass:: NVARCHAR2
+   :members: __init__
 
 .. autoclass:: NUMBER
    :members: __init__
 
-
 .. autoclass:: LONG
   :members: __init__
 
-
 .. autoclass:: RAW
+  :members: __init__
+
+.. autoclass:: ROWID
+  :members: __init__
+
+.. autoclass:: TIMESTAMP
   :members: __init__
 
 .. _cx_oracle:
@@ -76,4 +86,11 @@ cx_Oracle
 ---------
 
 .. automodule:: sqlalchemy.dialects.oracle.cx_oracle
+
+.. _oracledb:
+
+python-oracledb
+---------------
+
+.. automodule:: sqlalchemy.dialects.oracle.oracledb
 

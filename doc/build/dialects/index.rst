@@ -9,6 +9,8 @@ for the various DBAPIs.
 
 All dialects require that an appropriate DBAPI driver is installed.
 
+.. _included_dialects:
+
 Included Dialects
 -----------------
 
@@ -51,24 +53,6 @@ Support Definitions
         Pull requests with associated issues may be accepted to continue supporting
         older versions, which are reviewed on a case-by-case basis.
 
-
-Deprecated, no longer supported dialects
-----------------------------------------
-
-The following dialects have implementations within SQLAlchemy, but they are not
-part of continuous integration testing nor are they actively developed.
-These dialects are deprecated and will be removed in future major releases.
-
-.. toctree::
-    :maxdepth: 1
-    :glob:
-
-    firebird
-    sybase
-
-Note that both of these dialects now have third-party implementations that
-are maintained separately. See the following list.
-
 .. _external_toplevel:
 
 External Dialects
@@ -79,7 +63,7 @@ Currently maintained external dialect projects for SQLAlchemy include:
 +------------------------------------------------+---------------------------------------+
 | Database                                       | Dialect                               |
 +================================================+=======================================+
-| Actian Avalanche, Vector, Actian X, and Ingres | sqlalchemy-ingres_                    |
+| Actian Data Platform, Vector, Actian X, Ingres | sqlalchemy-ingres_                    |
 +------------------------------------------------+---------------------------------------+
 | Amazon Athena                                  | pyathena_                             |
 +------------------------------------------------+---------------------------------------+
@@ -95,7 +79,11 @@ Currently maintained external dialect projects for SQLAlchemy include:
 +------------------------------------------------+---------------------------------------+
 | CockroachDB                                    | sqlalchemy-cockroachdb_               |
 +------------------------------------------------+---------------------------------------+
-| CrateDB                                        | crate-python_                         |
+| CrateDB                                        | sqlalchemy-cratedb_                   |
++------------------------------------------------+---------------------------------------+
+| Databend                                       | databend-sqlalchemy_                  |
++------------------------------------------------+---------------------------------------+
+| Databricks                                     | databricks_                           |
 +------------------------------------------------+---------------------------------------+
 | EXASolution                                    | sqlalchemy_exasol_                    |
 +------------------------------------------------+---------------------------------------+
@@ -109,9 +97,13 @@ Currently maintained external dialect projects for SQLAlchemy include:
 +------------------------------------------------+---------------------------------------+
 | Google Sheets                                  | gsheets_                              |
 +------------------------------------------------+---------------------------------------+
+| Greenplum [2]_                                 | sqlalchemy-greenplum_                 |
++------------------------------------------------+---------------------------------------+
 | IBM DB2 and Informix                           | ibm-db-sa_                            |
 +------------------------------------------------+---------------------------------------+
 | IBM Netezza Performance Server [1]_            | nzalchemy_                            |
++------------------------------------------------+---------------------------------------+
+| Impala                                         | impyla_                               |
 +------------------------------------------------+---------------------------------------+
 | Microsoft Access (via pyodbc)                  | sqlalchemy-access_                    |
 +------------------------------------------------+---------------------------------------+
@@ -123,6 +115,8 @@ Currently maintained external dialect projects for SQLAlchemy include:
 +------------------------------------------------+---------------------------------------+
 | OpenGauss                                      | openGauss-sqlalchemy_                 |
 +------------------------------------------------+---------------------------------------+
+| Rockset                                        | rockset-sqlalchemy_                   |
++------------------------------------------------+---------------------------------------+
 | SAP ASE (fork of former Sybase dialect)        | sqlalchemy-sybase_                    |
 +------------------------------------------------+---------------------------------------+
 | SAP Hana [1]_                                  | sqlalchemy-hana_                      |
@@ -133,11 +127,15 @@ Currently maintained external dialect projects for SQLAlchemy include:
 +------------------------------------------------+---------------------------------------+
 | Teradata Vantage                               | teradatasqlalchemy_                   |
 +------------------------------------------------+---------------------------------------+
+| YugabyteDB                                     | sqlalchemy-yugabytedb_                |
++------------------------------------------------+---------------------------------------+
 
 .. [1] Supports version 1.3.x only at the moment.
+.. [2] Supports version 1.4.x only at the moment.
 
 .. _openGauss-sqlalchemy: https://gitee.com/opengauss/openGauss-sqlalchemy
-.. _sqlalchemy-ingres: https://github.com/clach04/ingres_sa_dialect
+.. _rockset-sqlalchemy: https://pypi.org/project/rockset-sqlalchemy
+.. _sqlalchemy-ingres: https://github.com/ActianCorp/sqlalchemy-ingres
 .. _nzalchemy: https://pypi.org/project/nzalchemy/
 .. _ibm-db-sa: https://pypi.org/project/ibm-db-sa/
 .. _PyHive: https://github.com/dropbox/PyHive#sqlalchemy
@@ -152,7 +150,7 @@ Currently maintained external dialect projects for SQLAlchemy include:
 .. _sqlalchemy-monetdb: https://github.com/gijzelaerr/sqlalchemy-monetdb
 .. _snowflake-sqlalchemy: https://github.com/snowflakedb/snowflake-sqlalchemy
 .. _sqlalchemy-tds: https://github.com/m32/sqlalchemy-tds
-.. _crate-python: https://github.com/crate/crate-python
+.. _sqlalchemy-cratedb: https://github.com/crate/sqlalchemy-cratedb
 .. _sqlalchemy-access: https://pypi.org/project/sqlalchemy-access/
 .. _elasticsearch-dbapi: https://github.com/preset-io/elasticsearch-dbapi/
 .. _pydruid: https://github.com/druid-io/pydruid
@@ -163,3 +161,8 @@ Currently maintained external dialect projects for SQLAlchemy include:
 .. _sqlalchemy-sybase: https://pypi.org/project/sqlalchemy-sybase/
 .. _firebolt-sqlalchemy: https://pypi.org/project/firebolt-sqlalchemy/
 .. _pyathena: https://github.com/laughingman7743/PyAthena/
+.. _sqlalchemy-yugabytedb: https://pypi.org/project/sqlalchemy-yugabytedb/
+.. _impyla: https://pypi.org/project/impyla/
+.. _databend-sqlalchemy: https://github.com/datafuselabs/databend-sqlalchemy
+.. _sqlalchemy-greenplum: https://github.com/PlaidCloud/sqlalchemy-greenplum
+.. _databricks: https://docs.databricks.com/en/dev-tools/sqlalchemy.html

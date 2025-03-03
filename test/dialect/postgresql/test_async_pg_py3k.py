@@ -1,4 +1,5 @@
 import random
+import uuid
 
 from sqlalchemy import Column
 from sqlalchemy import exc
@@ -76,7 +77,6 @@ class AsyncPgTest(fixtures.TestBase):
                 r"will now invalidate all prepared caches in response "
                 r"to this exception\)",
             ):
-
                 result = await conn.execute(
                     t1.select()
                     .where(t1.c.name.like("some name%"))
@@ -120,7 +120,7 @@ class AsyncPgTest(fixtures.TestBase):
                 "name",
                 ENUM(
                     *("beans", "means", "keens", "faux", "beau", "flow"),
-                    name="my_enum"
+                    name="my_enum",
                 ),
             ),
         )
@@ -167,7 +167,6 @@ class AsyncPgTest(fixtures.TestBase):
 
     @async_test
     async def test_failed_commit_recover(self, metadata, async_testing_engine):
-
         Table("t1", metadata, Column("id", Integer, primary_key=True))
 
         t2 = Table(
@@ -201,11 +200,9 @@ class AsyncPgTest(fixtures.TestBase):
     async def test_rollback_twice_no_problem(
         self, metadata, async_testing_engine
     ):
-
         engine = async_testing_engine()
 
         async with engine.connect() as conn:
-
             trans = await conn.begin()
 
             await trans.rollback()
@@ -214,7 +211,6 @@ class AsyncPgTest(fixtures.TestBase):
 
     @async_test
     async def test_closed_during_execute(self, metadata, async_testing_engine):
-
         engine = async_testing_engine()
 
         async with engine.connect() as conn:
@@ -231,7 +227,6 @@ class AsyncPgTest(fixtures.TestBase):
     async def test_failed_rollback_recover(
         self, metadata, async_testing_engine
     ):
-
         engine = async_testing_engine()
 
         async with engine.connect() as conn:
@@ -268,7 +263,23 @@ class AsyncPgTest(fixtures.TestBase):
         engine = async_testing_engine()
         with mock.patch.object(engine.dialect, methname) as codec_meth:
             conn = await engine.connect()
-            adapted_conn = (await conn.get_raw_connection()).connection
+            adapted_conn = (await conn.get_raw_connection()).dbapi_connection
             await conn.close()
 
         eq_(codec_meth.mock_calls, [mock.call(adapted_conn)])
+
+    @async_test
+    async def test_name_connection_func(self, metadata, async_testing_engine):
+        cache = []
+
+        def name_f():
+            name = str(uuid.uuid4())
+            cache.append(name)
+            return name
+
+        engine = async_testing_engine(
+            options={"connect_args": {"prepared_statement_name_func": name_f}},
+        )
+        async with engine.begin() as conn:
+            await conn.execute(select(1))
+            assert len(cache) > 0

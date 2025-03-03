@@ -1,3 +1,13 @@
+"""Format the code blocks in the documentation using black.
+
+this script parses the documentation files and runs black on the code blocks
+that it extracts from the documentation.
+
+.. versionadded:: 2.0
+
+"""
+# mypy: ignore-errors
+
 from argparse import ArgumentParser
 from argparse import RawDescriptionHelpFormatter
 from collections.abc import Iterator
@@ -96,10 +106,12 @@ def _format_block(
 
 format_directive = re.compile(r"^\.\.\s*format\s*:\s*(on|off)\s*$")
 
-doctest_code_start = re.compile(r"^(\s+)({(?:opensql|sql|stop)})?>>>\s?(.+)")
+doctest_code_start = re.compile(
+    r"^(\s+)({(?:opensql|execsql|printsql|sql|stop)})?>>>\s?(.+)"
+)
 doctest_code_continue = re.compile(r"^\s+\.\.\.\s?(\s*.*)")
 
-sql_code_start = re.compile(r"^(\s+)({(?:open)?sql})")
+sql_code_start = re.compile(r"^(\s+)({(?:open|print|exec)?sql})")
 sql_code_stop = re.compile(r"^(\s+){stop}")
 
 start_code_section = re.compile(
@@ -155,7 +167,6 @@ def format_file(
 
     disable_format = False
     for line_no, line in enumerate(original.splitlines(), 1):
-
         if (
             line
             and not disable_format
@@ -372,11 +383,11 @@ Use --report-doctest to ignore errors on plain code blocks.
 
     config = parse_pyproject_toml(home / "pyproject.toml")
     BLACK_MODE = Mode(
-        target_versions=set(
+        target_versions={
             TargetVersion[val.upper()]
             for val in config.get("target_version", [])
             if val != "py27"
-        ),
+        },
         line_length=config.get("line_length", DEFAULT_LINE_LENGTH)
         if args.project_line_length
         else DEFAULT_LINE_LENGTH,
