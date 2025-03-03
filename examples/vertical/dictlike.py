@@ -30,10 +30,22 @@ accessing them like a Python dict can be very convenient.  The example below
 can be used with many common vertical schemas as-is or with minor adaptations.
 
 """
-from __future__ import unicode_literals
+
+from sqlalchemy import and_
+from sqlalchemy import Column
+from sqlalchemy import create_engine
+from sqlalchemy import ForeignKey
+from sqlalchemy import Integer
+from sqlalchemy import Unicode
+from sqlalchemy import UnicodeText
+from sqlalchemy.ext.associationproxy import association_proxy
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.collections import attribute_keyed_dict
 
 
-class ProxiedDictMixin(object):
+class ProxiedDictMixin:
     """Adds obj[key] access to a mapped class.
 
     This class basically proxies dictionary access to an attribute
@@ -62,20 +74,6 @@ class ProxiedDictMixin(object):
 
 
 if __name__ == "__main__":
-    from sqlalchemy import (
-        Column,
-        Integer,
-        Unicode,
-        ForeignKey,
-        UnicodeText,
-        and_,
-        create_engine,
-    )
-    from sqlalchemy.orm import relationship, Session
-    from sqlalchemy.orm.collections import attribute_mapped_collection
-    from sqlalchemy.ext.declarative import declarative_base
-    from sqlalchemy.ext.associationproxy import association_proxy
-
     Base = declarative_base()
 
     class AnimalFact(Base):
@@ -96,7 +94,7 @@ if __name__ == "__main__":
         name = Column(Unicode(100))
 
         facts = relationship(
-            "AnimalFact", collection_class=attribute_mapped_collection("key")
+            "AnimalFact", collection_class=attribute_keyed_dict("key")
         )
 
         _proxied = association_proxy(

@@ -1,5 +1,3 @@
-# coding: utf-8
-
 from sqlalchemy import Column
 from sqlalchemy import exc
 from sqlalchemy import Integer
@@ -17,7 +15,6 @@ from sqlalchemy.testing.assertions import eq_
 
 
 class OnConflictTest(fixtures.TablesTest):
-
     __only_on__ = ("postgresql >= 9.5",)
     __backend__ = True
     run_define_tables = "each"
@@ -206,7 +203,10 @@ class OnConflictTest(fixtures.TablesTest):
             [(1, "name1")],
         )
 
-    def test_on_conflict_do_update_set_executemany(self, connection):
+    @testing.combinations(True, False, argnames="use_returning")
+    def test_on_conflict_do_update_set_executemany(
+        self, connection, use_returning
+    ):
         """test #6581"""
 
         users = self.tables.users
@@ -221,7 +221,10 @@ class OnConflictTest(fixtures.TablesTest):
             index_elements=[users.c.id],
             set_={"id": i.excluded.id, "name": i.excluded.name + ".5"},
         )
-        connection.execute(
+        if use_returning:
+            i = i.returning(users.c.id, users.c.name)
+
+        result = connection.execute(
             i,
             [
                 dict(id=1, name="name1"),
@@ -229,6 +232,9 @@ class OnConflictTest(fixtures.TablesTest):
                 dict(id=3, name="name3"),
             ],
         )
+
+        if use_returning:
+            eq_(result.all(), [(1, "name1.5"), (2, "name2.5"), (3, "name3")])
 
         eq_(
             connection.execute(users.select().order_by(users.c.id)).fetchall(),
@@ -281,7 +287,7 @@ class OnConflictTest(fixtures.TablesTest):
     def test_on_conflict_do_update_clauseelem_as_key_set(self, connection):
         users = self.tables.users
 
-        class MyElem(object):
+        class MyElem:
             def __init__(self, expr):
                 self.expr = expr
 

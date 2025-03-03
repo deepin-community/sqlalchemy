@@ -205,6 +205,7 @@ We can run our new script directly::
 
 
 """  # noqa
+
 import argparse
 import cProfile
 import gc
@@ -215,7 +216,7 @@ import sys
 import time
 
 
-class Profiler(object):
+class Profiler:
     tests = []
 
     _setup = None
@@ -268,9 +269,9 @@ class Profiler(object):
 
     def run(self):
         if self.test:
-            tests = [fn for fn in self.tests if fn.__name__ == self.test]
+            tests = [fn for fn in self.tests if fn.__name__ in self.test]
             if not tests:
-                raise ValueError("No such test: %s" % self.test)
+                raise ValueError("No such test(s): %s" % self.test)
         else:
             tests = self.tests
 
@@ -318,7 +319,6 @@ class Profiler(object):
 
     @classmethod
     def main(cls):
-
         parser = argparse.ArgumentParser("python -m examples.performance")
 
         if cls.name is None:
@@ -333,7 +333,9 @@ class Profiler(object):
                 except ImportError:
                     pass
 
-        parser.add_argument("--test", type=str, help="run specific test name")
+        parser.add_argument(
+            "--test", nargs="+", type=str, help="run specific test(s)"
+        )
 
         parser.add_argument(
             "--dburl",
@@ -400,7 +402,7 @@ class Profiler(object):
         return suites
 
 
-class TestResult(object):
+class TestResult:
     def __init__(
         self, profile, test, stats=None, total_time=None, sort="cumulative"
     ):
