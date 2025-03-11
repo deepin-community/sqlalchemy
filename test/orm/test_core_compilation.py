@@ -2,6 +2,7 @@ from sqlalchemy import bindparam
 from sqlalchemy import Column
 from sqlalchemy import delete
 from sqlalchemy import exc
+from sqlalchemy import exists
 from sqlalchemy import ForeignKey
 from sqlalchemy import func
 from sqlalchemy import insert
@@ -15,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy import String
 from sqlalchemy import testing
 from sqlalchemy import text
+from sqlalchemy import true
 from sqlalchemy import union
 from sqlalchemy import update
 from sqlalchemy import util
@@ -26,6 +28,7 @@ from sqlalchemy.orm import join as orm_join
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import query_expression
 from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Session
 from sqlalchemy.orm import undefer
 from sqlalchemy.orm import with_expression
 from sqlalchemy.orm import with_loader_criteria
@@ -40,8 +43,8 @@ from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import eq_
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import is_
+from sqlalchemy.testing import mock
 from sqlalchemy.testing import Variation
-from sqlalchemy.testing.assertions import expect_raises_message
 from sqlalchemy.testing.fixtures import fixture_session
 from sqlalchemy.testing.util import resolve_lambda
 from sqlalchemy.util.langhelpers import hybridproperty
@@ -76,6 +79,26 @@ class SelectableTest(QueryTest, AssertsCompiledSQL):
 
         eq_(s1.subquery().c.keys(), ["id"])
         eq_(s1.subquery().c.keys(), ["id"])
+
+    def test_integration_w_8285_subc(self):
+        Address = self.classes.Address
+
+        s1 = select(
+            Address.id, Address.__table__.c["user_id", "email_address"]
+        )
+        self.assert_compile(
+            s1,
+            "SELECT addresses.id, addresses.user_id, "
+            "addresses.email_address FROM addresses",
+        )
+
+        subq = s1.subquery()
+        self.assert_compile(
+            select(subq.c.user_id, subq.c.id),
+            "SELECT anon_1.user_id, anon_1.id FROM (SELECT addresses.id AS "
+            "id, addresses.user_id AS user_id, addresses.email_address "
+            "AS email_address FROM addresses) AS anon_1",
+        )
 
     def test_scalar_subquery_from_subq_same_source(self):
         """test #6394, ensure all_selected_columns is generated each time"""
@@ -196,6 +219,7 @@ class SelectableTest(QueryTest, AssertsCompiledSQL):
                 },
             ],
         ),
+        argnames="cols, expected",
     )
     def test_column_descriptions(self, cols, expected):
         User, Address = self.classes("User", "Address")
@@ -217,7 +241,12 @@ class SelectableTest(QueryTest, AssertsCompiledSQL):
         )
 
         stmt = select(*cols)
+
         eq_(stmt.column_descriptions, expected)
+
+        if stmt._propagate_attrs:
+            stmt = select(*cols).from_statement(stmt)
+            eq_(stmt.column_descriptions, expected)
 
     @testing.combinations(insert, update, delete, argnames="dml_construct")
     @testing.combinations(
@@ -276,6 +305,34 @@ class SelectableTest(QueryTest, AssertsCompiledSQL):
         eq_(stmt.entity_description, expected_entity)
         eq_(stmt.returning_column_descriptions, expected_returning)
 
+    @testing.combinations(
+        (
+            lambda User, Address: select(User.name)
+            .select_from(User, Address)
+            .where(User.id == Address.user_id),
+            "SELECT users.name FROM users, addresses "
+            "WHERE users.id = addresses.user_id",
+        ),
+        (
+            lambda User, Address: select(User.name)
+            .select_from(Address, User)
+            .where(User.id == Address.user_id),
+            "SELECT users.name FROM addresses, users "
+            "WHERE users.id = addresses.user_id",
+        ),
+    )
+    def test_select_from_ordering(self, stmt, expected):
+        User, Address = self.classes("User", "Address")
+
+        lambda_args = dict(
+            User=User,
+            Address=Address,
+            user_table=inspect(User).local_table,
+        )
+
+        stmt = testing.resolve_lambda(stmt, **lambda_args)
+        self.assert_compile(stmt, expected)
+
     def test_limit_offset_select(self):
         User = self.classes.User
 
@@ -304,6 +361,228 @@ class SelectableTest(QueryTest, AssertsCompiledSQL):
             "SELECT users.id FROM users OFFSET :param_1 "
             "ROWS FETCH FIRST :param_2 %s" % (fetch_clause,),
             checkparams={"param_1": 6, "param_2": 5},
+        )
+
+
+class PropagateAttrsTest(QueryTest):
+    def propagate_cases():
+        return testing.combinations(
+            (lambda: select(1), False),
+            (lambda User: select(func.count(User.id)), True),
+            (
+                lambda User: select(1).select_from(select(User).subquery()),
+                True,
+            ),
+            (
+                lambda User: select(
+                    select(User.id).where(User.id == 5).scalar_subquery()
+                ),
+                True,
+            ),
+            (
+                lambda User: select(
+                    select(User.id).where(User.id == 5).label("x")
+                ),
+                True,
+            ),
+            (lambda User: select(1).select_from(User), True),
+            (lambda User: select(1).where(exists(User.id)), True),
+            (lambda User: select(1).where(~exists(User.id)), True),
+            (
+                # changed as part of #9805
+                lambda User: select(1).where(User.id == 1),
+                True,
+            ),
+            (
+                # changed as part of #9805
+                lambda User, user_table: select(func.count(1))
+                .select_from(user_table)
+                .group_by(user_table.c.id)
+                .having(User.id == 1),
+                True,
+            ),
+            (
+                # changed as part of #9805
+                lambda User, user_table: select(1)
+                .select_from(user_table)
+                .order_by(User.id),
+                True,
+            ),
+            (
+                # changed as part of #9805
+                lambda User, user_table: select(1)
+                .select_from(user_table)
+                .group_by(User.id),
+                True,
+            ),
+            (
+                lambda User, user_table: select(user_table).join(
+                    aliased(User), true()
+                ),
+                True,
+            ),
+            (
+                # changed as part of #9805
+                lambda User, user_table: select(1)
+                .distinct(User.id)
+                .select_from(user_table),
+                True,
+                testing.requires.supports_distinct_on,
+            ),
+            (lambda user_table: select(user_table), False),
+            (lambda User: select(User), True),
+            (lambda User: union(select(User), select(User)), True),
+            (
+                lambda User: select(1).select_from(
+                    union(select(User), select(User)).subquery()
+                ),
+                True,
+            ),
+            (lambda User: select(User.id), True),
+            # these are meaningless, correlate by itself has no effect
+            (lambda User: select(1).correlate(User), False),
+            (lambda User: select(1).correlate_except(User), False),
+            (lambda User: delete(User).where(User.id > 20), True),
+            (
+                lambda User, user_table: delete(user_table).where(
+                    User.id > 20
+                ),
+                True,
+            ),
+            (lambda User: update(User).values(name="x"), True),
+            (
+                lambda User, user_table: update(user_table)
+                .values(name="x")
+                .where(User.id > 20),
+                True,
+            ),
+            (lambda User: insert(User).values(name="x"), True),
+        )
+
+    @propagate_cases()
+    def test_propagate_attr_yesno(self, test_case, expected):
+        User = self.classes.User
+        user_table = self.tables.users
+
+        stmt = resolve_lambda(test_case, User=User, user_table=user_table)
+
+        eq_(bool(stmt._propagate_attrs), expected)
+
+    @propagate_cases()
+    def test_autoflushes(self, test_case, expected):
+        User = self.classes.User
+        user_table = self.tables.users
+
+        stmt = resolve_lambda(test_case, User=User, user_table=user_table)
+
+        with Session(testing.db) as s:
+            with mock.patch.object(s, "_autoflush", wrap=True) as before_flush:
+                r = s.execute(stmt)
+                r.close()
+
+        if expected:
+            eq_(before_flush.mock_calls, [mock.call()])
+        else:
+            eq_(before_flush.mock_calls, [])
+
+
+class DMLTest(QueryTest, AssertsCompiledSQL):
+    __dialect__ = "default_enhanced"
+
+    @testing.variation("stmt_type", ["update", "delete"])
+    def test_dml_ctes(self, stmt_type: testing.Variation):
+        User = self.classes.User
+
+        if stmt_type.update:
+            fn = update
+        elif stmt_type.delete:
+            fn = delete
+        else:
+            stmt_type.fail()
+
+        inner_cte = fn(User).returning(User.id).cte("uid")
+
+        stmt = select(inner_cte)
+
+        if stmt_type.update:
+            self.assert_compile(
+                stmt,
+                "WITH uid AS (UPDATE users SET id=:id, name=:name "
+                "RETURNING users.id) SELECT uid.id FROM uid",
+            )
+        elif stmt_type.delete:
+            self.assert_compile(
+                stmt,
+                "WITH uid AS (DELETE FROM users "
+                "RETURNING users.id) SELECT uid.id FROM uid",
+            )
+        else:
+            stmt_type.fail()
+
+    @testing.variation("stmt_type", ["core", "orm"])
+    def test_aliased_update(self, stmt_type: testing.Variation):
+        """test #10279"""
+        if stmt_type.orm:
+            User = self.classes.User
+            u1 = aliased(User)
+            stmt = update(u1).where(u1.name == "xyz").values(name="newname")
+        elif stmt_type.core:
+            user_table = self.tables.users
+            u1 = user_table.alias()
+            stmt = update(u1).where(u1.c.name == "xyz").values(name="newname")
+        else:
+            stmt_type.fail()
+
+        self.assert_compile(
+            stmt,
+            "UPDATE users AS users_1 SET name=:name "
+            "WHERE users_1.name = :name_1",
+        )
+
+    @testing.variation("stmt_type", ["core", "orm"])
+    def test_aliased_delete(self, stmt_type: testing.Variation):
+        """test #10279"""
+        if stmt_type.orm:
+            User = self.classes.User
+            u1 = aliased(User)
+            stmt = delete(u1).where(u1.name == "xyz")
+        elif stmt_type.core:
+            user_table = self.tables.users
+            u1 = user_table.alias()
+            stmt = delete(u1).where(u1.c.name == "xyz")
+        else:
+            stmt_type.fail()
+
+        self.assert_compile(
+            stmt,
+            "DELETE FROM users AS users_1 WHERE users_1.name = :name_1",
+        )
+
+    @testing.variation("stmt_type", ["core", "orm"])
+    def test_add_cte(self, stmt_type: testing.Variation):
+        """test #10167"""
+
+        if stmt_type.orm:
+            User = self.classes.User
+            cte_select = select(User.name).limit(1).cte()
+            cte_insert = insert(User).from_select(["name"], cte_select).cte()
+        elif stmt_type.core:
+            user_table = self.tables.users
+            cte_select = select(user_table.c.name).limit(1).cte()
+            cte_insert = (
+                insert(user_table).from_select(["name"], cte_select).cte()
+            )
+        else:
+            stmt_type.fail()
+
+        select_stmt = select(cte_select).add_cte(cte_insert)
+
+        self.assert_compile(
+            select_stmt,
+            "WITH anon_2 AS (SELECT users.name AS name FROM users LIMIT "
+            ":param_1), anon_1 AS (INSERT INTO users (name) "
+            "SELECT anon_2.name AS name FROM anon_2) "
+            "SELECT anon_2.name FROM anon_2",
         )
 
 
@@ -364,14 +643,6 @@ class ColumnsClauseFromsTest(QueryTest, AssertsCompiledSQL):
             },
         )
         eq_(len(froms), 1)
-
-    def test_with_only_columns_unknown_kw(self):
-        User, Address = self.classes("User", "Address")
-
-        stmt = select(User.id)
-
-        with expect_raises_message(TypeError, "unknown parameters: foo"):
-            stmt.with_only_columns(User.id, foo="bar")
 
     @testing.combinations((True,), (False,))
     def test_replace_into_select_from_maintains_existing(self, use_flag):
@@ -485,7 +756,7 @@ class JoinTest(QueryTest, AssertsCompiledSQL):
             # the display of the attribute here is not consistent vs.
             # the straight aliased class, should improve this.
             r"explicit from clause .*User.* does not match left side .*"
-            r"of relationship attribute AliasedClass_User.addresses",
+            r"of relationship attribute aliased\(User\).addresses",
             stmt.compile,
         )
 
@@ -732,8 +1003,8 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
         self.assert_compile(
             q,
             "SELECT anon_1.id "
-            "FROM (SELECT users.name AS name, "
-            "users.id AS id FROM users) AS anon_1",
+            "FROM (SELECT users.id AS id, users.name AS name "
+            "FROM users) AS anon_1",
         )
 
         # testing deferred opts separately for deterministic SQL generation
@@ -742,9 +1013,9 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
 
         self.assert_compile(
             q,
-            "SELECT anon_1.name, anon_1.id "
-            "FROM (SELECT users.name AS name, "
-            "users.id AS id FROM users) AS anon_1",
+            "SELECT anon_1.id, anon_1.name "
+            "FROM (SELECT users.id AS id, users.name AS name "
+            "FROM users) AS anon_1",
         )
 
         q = select(u1).options(undefer(u1.name_upper))
@@ -752,8 +1023,8 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
         self.assert_compile(
             q,
             "SELECT upper(anon_1.name) AS upper_1, anon_1.id "
-            "FROM (SELECT users.name AS name, "
-            "users.id AS id FROM users) AS anon_1",
+            "FROM (SELECT users.id AS id, users.name AS name "
+            "FROM users) AS anon_1",
         )
 
     def test_non_deferred_subq_one(self, non_deferred_fixture):
@@ -834,9 +1105,9 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
 
         self.assert_compile(
             stmt,
-            "WITH RECURSIVE anon_1(name, id) AS "
-            "(SELECT users.name AS name, users.id AS id FROM users "
-            "UNION ALL SELECT users.name AS name, users.id AS id "
+            "WITH RECURSIVE anon_1(id, name) AS "
+            "(SELECT users.id AS id, users.name AS name FROM users "
+            "UNION ALL SELECT users.id AS id, users.name AS name "
             "FROM users JOIN anon_1 ON anon_1.id = users.id) "
             "SELECT users.id FROM users JOIN anon_1 ON users.id = anon_1.id",
         )
@@ -844,9 +1115,9 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
         # testing deferred opts separately for deterministic SQL generation
         self.assert_compile(
             stmt.options(undefer(User.name_upper)),
-            "WITH RECURSIVE anon_1(name, id) AS "
-            "(SELECT users.name AS name, users.id AS id FROM users "
-            "UNION ALL SELECT users.name AS name, users.id AS id "
+            "WITH RECURSIVE anon_1(id, name) AS "
+            "(SELECT users.id AS id, users.name AS name FROM users "
+            "UNION ALL SELECT users.id AS id, users.name AS name "
             "FROM users JOIN anon_1 ON anon_1.id = users.id) "
             "SELECT upper(users.name) AS upper_1, users.id "
             "FROM users JOIN anon_1 ON users.id = anon_1.id",
@@ -854,11 +1125,11 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
 
         self.assert_compile(
             stmt.options(undefer(User.name)),
-            "WITH RECURSIVE anon_1(name, id) AS "
-            "(SELECT users.name AS name, users.id AS id FROM users "
-            "UNION ALL SELECT users.name AS name, users.id AS id "
+            "WITH RECURSIVE anon_1(id, name) AS "
+            "(SELECT users.id AS id, users.name AS name FROM users "
+            "UNION ALL SELECT users.id AS id, users.name AS name "
             "FROM users JOIN anon_1 ON anon_1.id = users.id) "
-            "SELECT users.name, users.id "
+            "SELECT users.id, users.name "
             "FROM users JOIN anon_1 ON users.id = anon_1.id",
         )
 
@@ -877,12 +1148,13 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
 
         self.assert_compile(
             select(u_alias),
-            "SELECT anon_1.id FROM ((SELECT users.name AS name, "
-            "users.id AS id FROM users "
-            "WHERE users.id = :id_1 UNION SELECT users.name AS name, "
-            "users.id AS id "
+            "SELECT anon_1.id FROM ((SELECT users.id AS id, "
+            "users.name AS name "
+            "FROM users "
+            "WHERE users.id = :id_1 UNION SELECT users.id AS id, "
+            "users.name AS name "
             "FROM users WHERE users.id = :id_2) "
-            "UNION SELECT users.name AS name, users.id AS id "
+            "UNION SELECT users.id AS id, users.name AS name "
             "FROM users WHERE users.id = :id_3) AS anon_1",
         )
 
@@ -907,12 +1179,12 @@ class LoadersInSubqueriesTest(QueryTest, AssertsCompiledSQL):
 
         self.assert_compile(
             select(u_alias).options(undefer(u_alias.name)),
-            "SELECT anon_1.name, anon_1.id FROM "
-            "((SELECT users.name AS name, users.id AS id FROM users "
-            "WHERE users.id = :id_1 UNION SELECT users.name AS name, "
-            "users.id AS id "
+            "SELECT anon_1.id, anon_1.name FROM "
+            "((SELECT users.id AS id, users.name AS name FROM users "
+            "WHERE users.id = :id_1 UNION SELECT users.id AS id, "
+            "users.name AS name "
             "FROM users WHERE users.id = :id_2) "
-            "UNION SELECT users.name AS name, users.id AS id "
+            "UNION SELECT users.id AS id, users.name AS name "
             "FROM users WHERE users.id = :id_3) AS anon_1",
         )
 
@@ -1010,7 +1282,7 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
             users,
             properties=util.OrderedDict(
                 [
-                    ("concat", column_property((users.c.id * 2))),
+                    ("concat", column_property(users.c.id * 2)),
                     (
                         "count",
                         column_property(
@@ -1156,7 +1428,7 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
         # deferred, it gets special treatment (related to #6661)
         eq_(
             stmt.selected_columns.keys(),
-            ["name", "id"],
+            ["id", "name"],
         )
 
         stmt = select(User).options(
@@ -1167,7 +1439,7 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
         # at options when we do selected_columns
         eq_(
             stmt.selected_columns.keys(),
-            ["name", "id"],
+            ["id", "name"],
         )
 
     def test_with_expr_two(self, query_expression_fixture):
@@ -1372,7 +1644,7 @@ class ExtraColsTest(QueryTest, AssertsCompiledSQL):
         # the column properties
         stmt = select(stmt.subquery())
 
-        # TODO: shouldnt we be able to get to stmt.subquery().c.count ?
+        # TODO: shouldn't we be able to get to stmt.subquery().c.count ?
         self.assert_compile(
             stmt,
             "SELECT anon_2.anon_1, anon_2.anon_3, anon_2.id, anon_2.name "
@@ -1528,7 +1800,6 @@ class InheritedTest(_poly_fixtures._Polymorphic):
 class ExplicitWithPolymorhpicTest(
     _poly_fixtures._PolymorphicUnions, AssertsCompiledSQL
 ):
-
     __dialect__ = "default"
 
     default_punion = (
@@ -1735,7 +2006,6 @@ class ImplicitWithPolymorphicTest(
         )
 
     def test_select_where_subclass(self):
-
         Engineer = self.classes.Engineer
 
         # what will *not* work with Core, that the ORM does for now,
@@ -1786,7 +2056,6 @@ class ImplicitWithPolymorphicTest(
         )
 
     def test_select_where_columns_subclass(self):
-
         Engineer = self.classes.Engineer
 
         # what will *not* work with Core, that the ORM does for now,
@@ -2054,7 +2323,6 @@ class RelationshipNaturalInheritedTest(InheritedTest, AssertsCompiledSQL):
 class RelNaturalAliasedJoinsTest(
     _poly_fixtures._PolymorphicAliasedJoins, RelationshipNaturalInheritedTest
 ):
-
     # this is the label style for the polymorphic selectable, not the
     # outside query
     label_style = LABEL_STYLE_TABLENAME_PLUS_COL
@@ -2273,6 +2541,123 @@ class RelNaturalAliasedJoinsDisamTest(
         "LEFT OUTER JOIN managers "
         "ON people.person_id = managers.person_id) AS pjoin"
     )
+
+
+class JoinedInhTest(
+    InheritedTest, _poly_fixtures._Polymorphic, AssertsCompiledSQL
+):
+    __dialect__ = "default"
+
+    def test_load_only_on_sub_table(self):
+        Company = self.classes.Company
+        Engineer = self.classes.Engineer
+
+        e1 = aliased(Engineer, inspect(Engineer).local_table)
+
+        q = select(Company.name, e1.primary_language).join(
+            Company.employees.of_type(e1)
+        )
+
+        self.assert_compile(
+            q,
+            "SELECT companies.name, engineers.primary_language "
+            "FROM companies JOIN engineers "
+            "ON companies.company_id = people.company_id",
+        )
+
+    def test_load_only_on_sub_table_aliased(self):
+        Company = self.classes.Company
+        Engineer = self.classes.Engineer
+
+        e1 = aliased(Engineer, inspect(Engineer).local_table.alias())
+
+        q = select(Company.name, e1.primary_language).join(
+            Company.employees.of_type(e1)
+        )
+
+        self.assert_compile(
+            q,
+            "SELECT companies.name, engineers_1.primary_language "
+            "FROM companies JOIN engineers AS engineers_1 "
+            "ON companies.company_id = people.company_id",
+        )
+
+    def test_cte_recursive_handles_dupe_columns(self):
+        """test #10169"""
+        Engineer = self.classes.Engineer
+
+        my_cte = select(Engineer).cte(recursive=True)
+
+        self.assert_compile(
+            select(my_cte),
+            "WITH RECURSIVE anon_1(person_id, person_id_1, company_id, name, "
+            "type, status, "
+            "engineer_name, primary_language) AS (SELECT engineers.person_id "
+            "AS person_id, people.person_id AS person_id_1, people.company_id "
+            "AS company_id, people.name AS name, people.type AS type, "
+            "engineers.status AS status, engineers.engineer_name AS "
+            "engineer_name, engineers.primary_language AS primary_language "
+            "FROM people JOIN engineers ON people.person_id = "
+            "engineers.person_id) SELECT anon_1.person_id, "
+            "anon_1.person_id_1, anon_1.company_id, "
+            "anon_1.name, anon_1.type, anon_1.status, anon_1.engineer_name, "
+            "anon_1.primary_language FROM anon_1",
+        )
+
+    @testing.variation("named", [True, False])
+    @testing.variation("flat", [True, False])
+    def test_aliased_joined_entities(self, named, flat):
+        Company = self.classes.Company
+        Engineer = self.classes.Engineer
+
+        if named:
+            e1 = aliased(Engineer, flat=flat, name="myengineer")
+        else:
+            e1 = aliased(Engineer, flat=flat)
+
+        q = select(Company.name, e1.primary_language).join(
+            Company.employees.of_type(e1)
+        )
+
+        if not flat:
+            name = "anon_1" if not named else "myengineer"
+
+            self.assert_compile(
+                q,
+                "SELECT companies.name, "
+                f"{name}.engineers_primary_language FROM companies "
+                "JOIN (SELECT people.person_id AS people_person_id, "
+                "people.company_id AS people_company_id, "
+                "people.name AS people_name, people.type AS people_type, "
+                "engineers.person_id AS engineers_person_id, "
+                "engineers.status AS engineers_status, "
+                "engineers.engineer_name AS engineers_engineer_name, "
+                "engineers.primary_language AS engineers_primary_language "
+                "FROM people JOIN engineers "
+                "ON people.person_id = engineers.person_id) AS "
+                f"{name} "
+                f"ON companies.company_id = {name}.people_company_id",
+            )
+        elif named:
+            self.assert_compile(
+                q,
+                "SELECT companies.name, "
+                "myengineer_engineers.primary_language "
+                "FROM companies JOIN (people AS myengineer_people "
+                "JOIN engineers AS myengineer_engineers "
+                "ON myengineer_people.person_id = "
+                "myengineer_engineers.person_id) "
+                "ON companies.company_id = myengineer_people.company_id",
+            )
+        else:
+            self.assert_compile(
+                q,
+                "SELECT companies.name, engineers_1.primary_language "
+                "FROM companies JOIN (people AS people_1 "
+                "JOIN engineers AS engineers_1 "
+                "ON people_1.person_id = engineers_1.person_id) "
+                "ON companies.company_id = people_1.company_id",
+            )
 
 
 class RawSelectTest(QueryTest, AssertsCompiledSQL):
@@ -2543,8 +2928,6 @@ class RawSelectTest(QueryTest, AssertsCompiledSQL):
         )
 
     def test_update_from_entity(self):
-        from sqlalchemy.sql import update
-
         User = self.classes.User
         self.assert_compile(
             update(User), "UPDATE users SET id=:id, name=:name"
@@ -2563,8 +2946,6 @@ class RawSelectTest(QueryTest, AssertsCompiledSQL):
         )
 
     def test_delete_from_entity(self):
-        from sqlalchemy.sql import delete
-
         User = self.classes.User
         self.assert_compile(delete(User), "DELETE FROM users")
 
@@ -2575,8 +2956,6 @@ class RawSelectTest(QueryTest, AssertsCompiledSQL):
         )
 
     def test_insert_from_entity(self):
-        from sqlalchemy.sql import insert
-
         User = self.classes.User
         self.assert_compile(
             insert(User), "INSERT INTO users (id, name) VALUES (:id, :name)"
@@ -2588,8 +2967,29 @@ class RawSelectTest(QueryTest, AssertsCompiledSQL):
             checkparams={"name": "ed"},
         )
 
+    def test_update_returning_star(self):
+        User = self.classes.User
+        self.assert_compile(
+            update(User).returning(literal_column("*")),
+            "UPDATE users SET id=:id, name=:name RETURNING *",
+        )
+
+    def test_delete_returning_star(self):
+        User = self.classes.User
+        self.assert_compile(
+            delete(User).returning(literal_column("*")),
+            "DELETE FROM users RETURNING *",
+        )
+
+    def test_insert_returning_star(self):
+        User = self.classes.User
+        self.assert_compile(
+            insert(User).returning(literal_column("*")),
+            "INSERT INTO users (id, name) VALUES (:id, :name) RETURNING *",
+        )
+
     def test_col_prop_builtin_function(self):
-        class Foo(object):
+        class Foo:
             pass
 
         self.mapper_registry.map_imperatively(

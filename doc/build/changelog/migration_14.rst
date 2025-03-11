@@ -228,11 +228,15 @@ for queries that return many rows::
         result = session.query(Customer).filter(Customer.id == id_).one()
 
 This example in the 1.3 release of SQLAlchemy on a Dell XPS13 running Linux
-completes as follows::
+completes as follows:
+
+.. sourcecode:: text
 
     test_orm_query : (10000 iterations); total time 3.440652 sec
 
-In 1.4, the code above without modification completes::
+In 1.4, the code above without modification completes:
+
+.. sourcecode:: text
 
     test_orm_query : (10000 iterations); total time 2.367934 sec
 
@@ -257,7 +261,9 @@ Using this API looks as follows::
         stmt += lambda s: s.where(Customer.id == id_)
         session.execute(stmt).scalar_one()
 
-The code above completes::
+The code above completes:
+
+.. sourcecode:: text
 
     test_orm_query_newstyle_w_lambdas : (10000 iterations); total time 1.247092 sec
 
@@ -341,11 +347,11 @@ the :class:`_orm.registry` object, and fall into these categories:
     * Using :meth:`_orm.registry.map_imperatively`
         * :ref:`orm_imperative_dataclasses`
 
-The existing classical mapping function :func:`_orm.mapper` remains, however
-it is deprecated to call upon :func:`_orm.mapper` directly; the new
-:meth:`_orm.registry.map_imperatively` method now routes the request through
-the :meth:`_orm.registry` so that it integrates with other declarative mappings
-unambiguously.
+The existing classical mapping function ``sqlalchemy.orm.mapper()`` remains,
+however it is deprecated to call upon ``sqlalchemy.orm.mapper()`` directly; the
+new :meth:`_orm.registry.map_imperatively` method now routes the request
+through the :meth:`_orm.registry` so that it integrates with other declarative
+mappings unambiguously.
 
 The new approach interoperates with 3rd party class instrumentation systems
 which necessarily must take place on the class before the mapping process
@@ -546,7 +552,7 @@ SQLAlchemy has for a long time used a parameter-injecting decorator to help reso
 mutually-dependent module imports, like this::
 
     @util.dependency_for("sqlalchemy.sql.dml")
-    def insert(self, dml, *args, **kw):
+    def insert(self, dml, *args, **kw): ...
 
 Where the above function would be rewritten to no longer have the ``dml`` parameter
 on the outside.  This would confuse code-linting tools into seeing a missing parameter
@@ -647,7 +653,9 @@ That is, this will now raise::
     stmt1 = select(user.c.id, user.c.name)
     stmt2 = select(addresses, stmt1).select_from(addresses.join(stmt1))
 
-Raising::
+Raising:
+
+.. sourcecode:: text
 
     sqlalchemy.exc.ArgumentError: Column expression or FROM clause expected,
     got <...Select object ...>. To create a FROM clause from a <class
@@ -679,7 +687,9 @@ The rationale for this change is based on the following:
   without first creating an alias or subquery would be that it creates an
   unnamed subquery.   While standard SQL does support this syntax, in practice
   it is rejected by most databases.  For example, both the MySQL and PostgreSQL
-  outright reject the usage of unnamed subqueries::
+  outright reject the usage of unnamed subqueries:
+
+  .. sourcecode:: sql
 
       # MySQL / MariaDB:
 
@@ -696,7 +706,9 @@ The rationale for this change is based on the following:
       HINT:  For example, FROM (SELECT ...) [AS] foo.
 
   A database like SQLite accepts them, however it is still often the case that
-  the names produced from such a subquery are too ambiguous to be useful::
+  the names produced from such a subquery are too ambiguous to be useful:
+
+  .. sourcecode:: sql
 
       sqlite> CREATE TABLE a(id integer);
       sqlite> CREATE TABLE b(id integer);
@@ -797,7 +809,9 @@ matching to the left entity::
         addresses_table, user_table.c.id == addresses_table.c.user_id
     )
 
-producing::
+producing:
+
+.. sourcecode:: sql
 
     SELECT user.id, user.name FROM user JOIN address ON user.id=address.user_id
 
@@ -821,7 +835,9 @@ allows easier specification of the left and right side of a join at once::
 
     stmt = select(Address.email_address, User.name).join_from(User, Address)
 
-producing::
+producing:
+
+.. sourcecode:: sql
 
     SELECT address.email_address, user.name FROM user JOIN address ON user.id == address.user_id
 
@@ -1094,29 +1110,37 @@ an IN expression::
 
     stmt = select(A.id, A.data).where(A.id.in_([1, 2, 3]))
 
-The pre-execution string representation is::
+The pre-execution string representation is:
+
+.. sourcecode:: pycon+sql
 
     >>> print(stmt)
-    SELECT a.id, a.data
+    {printsql}SELECT a.id, a.data
     FROM a
     WHERE a.id IN ([POSTCOMPILE_id_1])
 
-To render the values directly, use ``literal_binds`` as was the case previously::
+To render the values directly, use ``literal_binds`` as was the case previously:
+
+.. sourcecode:: pycon+sql
 
     >>> print(stmt.compile(compile_kwargs={"literal_binds": True}))
-    SELECT a.id, a.data
+    {printsql}SELECT a.id, a.data
     FROM a
     WHERE a.id IN (1, 2, 3)
 
 A new flag, "render_postcompile", is added as a helper to allow the current
-bound value to be rendered as it would be passed to the database::
+bound value to be rendered as it would be passed to the database:
+
+.. sourcecode:: pycon+sql
 
     >>> print(stmt.compile(compile_kwargs={"render_postcompile": True}))
-    SELECT a.id, a.data
+    {printsql}SELECT a.id, a.data
     FROM a
     WHERE a.id IN (:id_1_1, :id_1_2, :id_1_3)
 
-Engine logging output shows the ultimate rendered statement as well::
+Engine logging output shows the ultimate rendered statement as well:
+
+.. sourcecode:: sql
 
     INFO sqlalchemy.engine.base.Engine SELECT a.id, a.data
     FROM a
@@ -1189,7 +1213,9 @@ not line up with these two tables will create an additional FROM entry::
 The above query selects from a JOIN of ``User`` and ``address_alias``, the
 latter of which is an alias of the ``Address`` entity.  However, the
 ``Address`` entity is used within the WHERE clause directly, so the above would
-result in the SQL::
+result in the SQL:
+
+.. sourcecode:: sql
 
     SELECT
         users.id AS users_id, users.name AS users_name,
@@ -1277,12 +1303,14 @@ following query will return all rows and produce no warnings::
 
 The warning is only generated by default when the statement is compiled by the
 :class:`_engine.Connection` for execution; calling the :meth:`_expression.ClauseElement.compile`
-method will not emit a warning unless the linting flag is supplied::
+method will not emit a warning unless the linting flag is supplied:
+
+.. sourcecode:: pycon+sql
 
     >>> from sqlalchemy.sql import FROM_LINTING
     >>> print(q.statement.compile(linting=FROM_LINTING))
     SAWarning: SELECT statement has a cartesian product between FROM element(s) "addresses" and FROM element "users".  Apply join condition(s) between each element to resolve.
-    SELECT users.id, users.name, users.fullname, users.nickname
+    {printsql}SELECT users.id, users.name, users.fullname, users.nickname
     FROM addresses, users JOIN addresses AS addresses_1 ON users.id = addresses_1.user_id
     WHERE addresses.email_address = :email_address_1
 
@@ -1325,10 +1353,11 @@ including methods such as:
     with engine.connect() as conn:
         result = conn.execute(
             table.select().order_by(table.c.id),
-            execution_options={"stream_results": True}
+            execution_options={"stream_results": True},
         )
         for chunk in result.partitions(500):
             # process up to 500 records
+            ...
 
 :meth:`_engine.Result.columns` - allows slicing and reorganizing of rows:
 
@@ -1349,7 +1378,7 @@ first column by default but can also be selected:
 
     result = session.execute(select(User).order_by(User.id))
     for user_obj in result.scalars():
-        # ...
+        ...
 
 :meth:`_engine.Result.mappings` - instead of named-tuple rows, returns
 dictionaries:
@@ -1405,17 +1434,17 @@ patterns in place in order to support this process.   The note in
 :ref:`change_4710_orm` describes the ORM's use of the :class:`.Row` class.
 
 For release 1.4, the :class:`.Row` class provides an additional subclass
-:class:`.LegacyRow`, which is used by Core and provides a backwards-compatible
+``LegacyRow``, which is used by Core and provides a backwards-compatible
 version of :class:`.RowProxy` while emitting deprecation warnings for those API
 features and behaviors that will be moved.  ORM :class:`_query.Query` now makes use
 of :class:`.Row` directly as a replacement for :class:`.KeyedTuple`.
 
-The :class:`.LegacyRow` class is a transitional class where the
+The ``LegacyRow`` class is a transitional class where the
 ``__contains__`` method is still testing against the keys, not the values,
 while emitting a deprecation warning when the operation succeeds.
 Additionally, all the other mapping-like methods on the previous
-:class:`.RowProxy` are deprecated, including :meth:`.LegacyRow.keys`,
-:meth:`.LegacyRow.items`, etc.  For mapping-like behaviors from a :class:`.Row`
+:class:`.RowProxy` are deprecated, including ``LegacyRow.keys()``,
+``LegacyRow.items()``, etc.  For mapping-like behaviors from a :class:`.Row`
 object, including support for these methods as well as a key-oriented
 ``__contains__`` operator, the API going forward will be to first access a
 special attribute :attr:`.Row._mapping`, which will then provide a complete
@@ -1425,7 +1454,9 @@ Rationale: To behave more like a named tuple rather than a mapping
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The difference between a named tuple and a mapping as far as boolean operators
-can be summarized.   Given a "named tuple" in pseudo code as::
+can be summarized.   Given a "named tuple" in pseudo code as:
+
+.. sourcecode:: text
 
     row = (id: 5,  name: 'some name')
 
@@ -1434,7 +1465,7 @@ The biggest cross-incompatible difference is the behavior of ``__contains__``::
     "id" in row  # True for a mapping, False for a named tuple
     "some name" in row  # False for a mapping, True for a named tuple
 
-In 1.4, when a :class:`.LegacyRow` is returned by a Core result set, the above
+In 1.4, when a ``LegacyRow`` is returned by a Core result set, the above
 ``"id" in row`` comparison will continue to succeed, however a deprecation
 warning will be emitted.   To use the "in" operator as a mapping, use the
 :attr:`.Row._mapping` attribute::
@@ -1534,20 +1565,24 @@ column labels as well as duplicate column objects themselves, so that result
 tuples are organized and ordered in the identical way in that the columns were
 selected.  The ORM :class:`_query.Query` already works this way, so this change
 allows for greater cross-compatibility between the two, which is a key goal of
-the 2.0 transition::
+the 2.0 transition:
+
+.. sourcecode:: pycon+sql
 
     >>> from sqlalchemy import column, select
     >>> c1, c2, c3, c4 = column("c1"), column("c2"), column("c3"), column("c4")
     >>> stmt = select(c1, c2, c3.label("c2"), c2, c4)
     >>> print(stmt)
-    SELECT c1, c2, c3 AS c2, c2, c4
+    {printsql}SELECT c1, c2, c3 AS c2, c2, c4
 
 To support this change, the :class:`_expression.ColumnCollection` used by
 :class:`_expression.SelectBase` as well as for derived FROM clauses such as subqueries
 also support duplicate columns; this includes the new
 :attr:`_expression.SelectBase.selected_columns` attribute, the deprecated ``SelectBase.c``
 attribute, as well as the :attr:`_expression.FromClause.c` attribute seen on constructs
-such as :class:`.Subquery` and :class:`_expression.Alias`::
+such as :class:`.Subquery` and :class:`_expression.Alias`:
+
+.. sourcecode:: pycon+sql
 
     >>> list(stmt.selected_columns)
     [
@@ -1559,7 +1594,7 @@ such as :class:`.Subquery` and :class:`_expression.Alias`::
     ]
 
     >>> print(stmt.subquery().select())
-    SELECT anon_1.c1, anon_1.c2, anon_1.c2, anon_1.c2, anon_1.c4
+    {printsql}SELECT anon_1.c1, anon_1.c2, anon_1.c2, anon_1.c2, anon_1.c4
     FROM (SELECT c1, c2, c3 AS c2, c2, c4) AS anon_1
 
 :class:`_expression.ColumnCollection` also allows access by integer index to support
@@ -1578,7 +1613,9 @@ replaced by %r, which has the same key.  Consider use_labels for select()
 statements."`` is **removed**; the :meth:`_expression.Select.apply_labels` is still
 available and is still used by the ORM for all SELECT operations, however it
 does not imply deduplication of column objects, although it does imply
-deduplication of implicitly generated labels::
+deduplication of implicitly generated labels:
+
+.. sourcecode:: pycon+sql
 
     >>> from sqlalchemy import table
     >>> user = table("user", column("id"), column("name"))
@@ -1590,14 +1627,16 @@ deduplication of implicitly generated labels::
 Finally, the change makes it easier to create UNION and other
 :class:`_selectable.CompoundSelect` objects, by ensuring that the number and position
 of columns in a SELECT statement mirrors what was given, in a use case such
-as::
+as:
+
+.. sourcecode:: pycon+sql
 
     >>> s1 = select(user, user.c.id)
     >>> s2 = select(c1, c2, c3)
     >>> from sqlalchemy import union
     >>> u = union(s1, s2)
     >>> print(u)
-    SELECT "user".id, "user".name, "user".id
+    {printsql}SELECT "user".id, "user".name, "user".id
     FROM "user" UNION SELECT c1, c2, c3
 
 
@@ -1613,7 +1652,9 @@ Improved column labeling for simple column expressions using CAST or similar
 
 A user pointed out that the PostgreSQL database has a convenient behavior when
 using functions like CAST against a named column, in that the result column name
-is named the same as the inner expression::
+is named the same as the inner expression:
+
+.. sourcecode:: text
 
     test=> SELECT CAST(data AS VARCHAR) FROM foo;
 
@@ -1625,7 +1666,9 @@ is named the same as the inner expression::
 This allows one to apply CAST to table columns while not losing the column
 name (above using the name ``"data"``) in the result row.    Compare to
 databases such as MySQL/MariaDB, as well as most others, where the column
-name is taken from the full SQL expression and is not very portable::
+name is taken from the full SQL expression and is not very portable:
+
+.. sourcecode:: text
 
     MariaDB [test]> SELECT CAST(data AS CHAR) FROM foo;
     +--------------------+
@@ -1638,10 +1681,12 @@ name is taken from the full SQL expression and is not very portable::
 
 In SQLAlchemy Core expressions, we never deal with a raw generated name like
 the above, as SQLAlchemy applies auto-labeling to expressions like these, which
-are up until now always a so-called "anonymous" expression::
+are up until now always a so-called "anonymous" expression:
+
+.. sourcecode:: pycon+sql
 
     >>> print(select(cast(foo.c.data, String)))
-    SELECT CAST(foo.data AS VARCHAR) AS anon_1     # old behavior
+    {printsql}SELECT CAST(foo.data AS VARCHAR) AS anon_1     # old behavior
     FROM foo
 
 These anonymous expressions were necessary as SQLAlchemy's
@@ -1656,32 +1701,40 @@ necessary for most Core SELECT constructs; in release 1.4, the system overall
 is becoming more comfortable with SELECT statements that have duplicate column
 or label names such as in :ref:`change_4753`.  So we now emulate PostgreSQL's
 reasonable behavior for simple modifications to a single column, most
-prominently with CAST::
+prominently with CAST:
+
+.. sourcecode:: pycon+sql
 
     >>> print(select(cast(foo.c.data, String)))
-    SELECT CAST(foo.data AS VARCHAR) AS data
+    {printsql}SELECT CAST(foo.data AS VARCHAR) AS data
     FROM foo
 
 For CAST against expressions that don't have a name, the previous logic is used
-to generate the usual "anonymous" labels::
+to generate the usual "anonymous" labels:
+
+.. sourcecode:: pycon+sql
 
     >>> print(select(cast("hi there," + foo.c.data, String)))
-    SELECT CAST(:data_1 + foo.data AS VARCHAR) AS anon_1
+    {printsql}SELECT CAST(:data_1 + foo.data AS VARCHAR) AS anon_1
     FROM foo
 
 A :func:`.cast` against a :class:`.Label`, despite having to omit the label
 expression as these don't render inside of a CAST, will nonetheless make use of
-the given name::
+the given name:
+
+.. sourcecode:: pycon+sql
 
     >>> print(select(cast(("hi there," + foo.c.data).label("hello_data"), String)))
-    SELECT CAST(:data_1 + foo.data AS VARCHAR) AS hello_data
+    {printsql}SELECT CAST(:data_1 + foo.data AS VARCHAR) AS hello_data
     FROM foo
 
 And of course as was always the case, :class:`.Label` can be applied to the
-expression on the outside to apply an "AS <name>" label directly::
+expression on the outside to apply an "AS <name>" label directly:
+
+.. sourcecode:: pycon+sql
 
     >>> print(select(cast(("hi there," + foo.c.data), String).label("hello_data")))
-    SELECT CAST(:data_1 + foo.data AS VARCHAR) AS hello_data
+    {printsql}SELECT CAST(:data_1 + foo.data AS VARCHAR) AS hello_data
     FROM foo
 
 
@@ -1700,7 +1753,9 @@ OFFSET values, typically used for pagination and "top N" style results.
 
 While SQLAlchemy has used bound parameters for LIMIT/OFFSET schemes for many
 years, a few outliers remained where such parameters were not allowed, including
-a SQL Server "TOP N" statement, such as::
+a SQL Server "TOP N" statement, such as:
+
+.. sourcecode:: sql
 
     SELECT TOP 5 mytable.id, mytable.data FROM mytable
 
@@ -1708,7 +1763,9 @@ as well as with Oracle, where the FIRST_ROWS() hint (which SQLAlchemy will
 use if the ``optimize_limits=True`` parameter is passed to
 :func:`_sa.create_engine` with an Oracle URL) does not allow them,
 but also that using bound parameters with ROWNUM comparisons has been reported
-as producing slower query plans::
+as producing slower query plans:
+
+.. sourcecode:: sql
 
     SELECT anon_1.id, anon_1.data FROM (
         SELECT /*+ FIRST_ROWS(5) */
@@ -1730,11 +1787,15 @@ be rendered literally into the SQL string before sending it to the DBAPI
 SQL Server and Oracle dialects, so that the drivers receive the literal
 rendered value but the rest of SQLAlchemy can still consider this as a
 bound parameter.   The above two statements when stringified using
-``str(statement.compile(dialect=<dialect>))`` now look like::
+``str(statement.compile(dialect=<dialect>))`` now look like:
+
+.. sourcecode:: sql
 
     SELECT TOP [POSTCOMPILE_param_1] mytable.id, mytable.data FROM mytable
 
-and::
+and:
+
+.. sourcecode:: sql
 
     SELECT anon_1.id, anon_1.data FROM (
         SELECT /*+ FIRST_ROWS([POSTCOMPILE__ora_frow_1]) */
@@ -1750,7 +1811,9 @@ The ``[POSTCOMPILE_<param>]`` format is also what is seen when an
 "expanding IN" is used.
 
 When viewing the SQL logging output, the final form of the statement will
-be seen::
+be seen:
+
+.. sourcecode:: sql
 
     SELECT anon_1.id, anon_1.data FROM (
         SELECT /*+ FIRST_ROWS(5) */
@@ -1821,11 +1884,11 @@ should be opted in to, rather than being turned on by default.
 To ensure that a CREATE CONSTRAINT is emitted for these types, set these
 flags to ``True``::
 
-  class Spam(Base):
-      __tablename__ = "spam"
-      id = Column(Integer, primary_key=True)
-      boolean = Column(Boolean(create_constraint=True))
-      enum = Column(Enum("a", "b", "c", create_constraint=True))
+    class Spam(Base):
+        __tablename__ = "spam"
+        id = Column(Integer, primary_key=True)
+        boolean = Column(Boolean(create_constraint=True))
+        enum = Column(Enum("a", "b", "c", create_constraint=True))
 
 :ticket:`5367`
 
@@ -1900,7 +1963,7 @@ as was present previously.
 
 .. seealso::
 
-    :ref:`deferred_raiseload`
+    :ref:`orm_queryguide_deferred_raiseload`
 
 :ticket:`4826`
 
@@ -1925,7 +1988,9 @@ approach to be performant.
 SQLAlchemy includes a :ref:`performance suite <examples_performance>` within
 its examples, where we can compare the times generated for the "batch_inserts"
 runner against 1.3 and 1.4, revealing a 3x-5x speedup for most flavors
-of batch insert::
+of batch insert:
+
+.. sourcecode:: text
 
     # 1.3
     $ python -m examples.performance bulk_inserts --dburl postgresql://scott:tiger@localhost/test
@@ -1948,13 +2013,17 @@ of batch insert::
 Note that the ``execute_values()`` extension modifies the INSERT statement in the psycopg2
 layer, **after** it's been logged by SQLAlchemy.  So with SQL logging, one will see the
 parameter sets batched together, but the joining of multiple "values" will not be visible
-on the application side::
+on the application side:
+
+.. sourcecode:: text
 
     2020-06-27 19:08:18,166 INFO sqlalchemy.engine.Engine INSERT INTO a (data) VALUES (%(data)s) RETURNING a.id
     2020-06-27 19:08:18,166 INFO sqlalchemy.engine.Engine [generated in 0.00698s] ({'data': 'data 1'}, {'data': 'data 2'}, {'data': 'data 3'}, {'data': 'data 4'}, {'data': 'data 5'}, {'data': 'data 6'}, {'data': 'data 7'}, {'data': 'data 8'}  ... displaying 10 of 4999 total bound parameter sets ...  {'data': 'data 4998'}, {'data': 'data 4999'})
     2020-06-27 19:08:18,254 INFO sqlalchemy.engine.Engine COMMIT
 
-The ultimate INSERT statement can be seen by enabling statement logging on the PostgreSQL side::
+The ultimate INSERT statement can be seen by enabling statement logging on the PostgreSQL side:
+
+.. sourcecode:: text
 
     2020-06-27 19:08:18.169 EDT [26960] LOG:  statement: INSERT INTO a (data)
     VALUES ('data 1'),('data 2'),('data 3'),('data 4'),('data 5'),('data 6'),('data
@@ -1986,7 +2055,9 @@ An ORM bulk update or delete that uses the "fetch" strategy::
 
 Will now use RETURNING if the backend database supports it; this currently
 includes PostgreSQL and SQL Server (the Oracle dialect does not support RETURNING
-of multiple rows)::
+of multiple rows):
+
+.. sourcecode:: text
 
     UPDATE users SET age_int=(users.age_int - %(age_int_1)s) WHERE users.age_int > %(age_int_2)s RETURNING users.id
     [generated in 0.00060s] {'age_int_1': 10, 'age_int_2': 29}
@@ -1995,7 +2066,9 @@ of multiple rows)::
     Row (4,)
 
 For backends that do not support RETURNING of multiple rows, the previous approach
-of emitting SELECT for the primary keys beforehand is still used::
+of emitting SELECT for the primary keys beforehand is still used:
+
+.. sourcecode:: text
 
     SELECT users.id FROM users WHERE users.age_int > %(age_int_1)s
     [generated in 0.00043s] {'age_int_1': 29}
@@ -2040,7 +2113,7 @@ The rationale is so that by SQLAlchemy 2.0, both Core and ORM SELECT statements
 will return result rows using the same :class:`.Row` object which behaves  like
 a named tuple.  Dictionary-like functionality is available from :class:`.Row`
 via the :attr:`.Row._mapping` attribute.   In the interim, Core result sets
-will make use of a :class:`.Row` subclass :class:`.LegacyRow` which maintains
+will make use of a :class:`.Row` subclass ``LegacyRow`` which maintains
 the previous dict/tuple hybrid behavior for backwards compatibility while the
 :class:`.Row` class will be used directly for ORM tuple results returned
 by the :class:`_query.Query` object.
@@ -2199,8 +2272,8 @@ in any way::
 
         addresses = relationship(Address, backref=backref("user", viewonly=True))
 
-    class Address(Base):
-        # ...
+
+    class Address(Base): ...
 
 
     u1 = session.query(User).filter_by(name="x").first()
@@ -2284,10 +2357,12 @@ Above, the ``A`` object was loaded with a ``joinedload()`` option associated
 with it in order to eagerly load the ``bs`` collection.    After the
 ``session.commit()``, the state of the object is expired.  Upon accessing
 the ``.data`` column attribute, the object is refreshed and this will now
-include the joinedload operation as well::
+include the joinedload operation as well:
+
+.. sourcecode:: pycon+sql
 
     >>> a1.data
-    SELECT a.id AS a_id, a.data AS a_data, b_1.id AS b_1_id, b_1.a_id AS b_1_a_id
+    {execsql}SELECT a.id AS a_id, a.data AS a_data, b_1.id AS b_1_id, b_1.a_id AS b_1_a_id
     FROM a LEFT OUTER JOIN b AS b_1 ON a.id = b_1.a_id
     WHERE a.id = ?
 
@@ -2300,13 +2375,15 @@ For the "secondary" eager loaders "selectinload" and "subqueryload", the SQL
 strategy for these loaders is not necessary in order to eagerly load attributes
 on a single object; so they will instead invoke the "immediateload" strategy in
 a refresh scenario, which resembles the query emitted by "lazyload", emitted as
-an additional query::
+an additional query:
+
+.. sourcecode:: pycon+sql
 
     >>> a1 = session.query(A).options(selectinload(A.bs)).first()
     >>> a1.data = "new data"
     >>> session.commit()
     >>> a1.data
-    SELECT a.id AS a_id, a.data AS a_data
+    {execsql}SELECT a.id AS a_id, a.data AS a_data
     FROM a
     WHERE a.id = ?
     (1,)
@@ -2657,7 +2734,9 @@ to be inserted has the same primary key as an object that is already present::
     session.add(Product(id=1))
     s.commit()  # <-- will raise FlushError
 
-The change is that the :class:`.FlushError` is altered to be only a warning::
+The change is that the :class:`.FlushError` is altered to be only a warning:
+
+.. sourcecode:: text
 
     sqlalchemy/orm/persistence.py:408: SAWarning: New instance <Product at 0x7f1ff65e0ba8> with identity key (<class '__main__.Product'>, (1,), None) conflicts with persistent instance <Product at 0x7f1ff60a4550>
 
@@ -2665,14 +2744,15 @@ The change is that the :class:`.FlushError` is altered to be only a warning::
 Subsequent to that, the condition will attempt to insert the row into the
 database which will emit :class:`.IntegrityError`, which is the same error that
 would be raised if the primary key identity was not already present in the
-:class:`.Session`::
+:class:`.Session`:
+
+.. sourcecode:: text
 
     sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) UNIQUE constraint failed: product.id
 
 The rationale is to allow code that is using :class:`.IntegrityError` to catch
 duplicates to function regardless of the existing state of the
 :class:`.Session`, as is often done using savepoints::
-
 
     # add another Product with same primary key
     try:
@@ -2730,7 +2810,9 @@ disallowed::
         # this is now an error
         addresses = relationship("Address", viewonly=True, cascade="all, delete-orphan")
 
-The above will raise::
+The above will raise:
+
+.. sourcecode:: text
 
     sqlalchemy.exc.ArgumentError: Cascade settings
     "delete, delete-orphan, merge, save-update" apply to persistence
@@ -2773,7 +2855,9 @@ inheritance mapping::
 
 The subquery selects both the ``Engineer`` and the ``Manager`` rows, and
 even though the outer query is against ``Manager``, we get a non ``Manager``
-object back::
+object back:
+
+.. sourcecode:: text
 
     SELECT anon_1.type AS anon_1_type, anon_1.id AS anon_1_id
     FROM (SELECT employee.type AS type, employee.id AS id
@@ -2781,7 +2865,9 @@ object back::
     2020-01-29 18:04:13,524 INFO sqlalchemy.engine.base.Engine ()
     [<__main__.Engineer object at 0x7f7f5b9a9810>, <__main__.Manager object at 0x7f7f5b9a9750>]
 
-The new behavior is that this condition raises an error::
+The new behavior is that this condition raises an error:
+
+.. sourcecode:: text
 
     sqlalchemy.exc.InvalidRequestError: Row with identity key
     (<class '__main__.Employee'>, (1,), None) can't be loaded into an object;
@@ -2796,7 +2882,9 @@ to construct an entity is made.
 In the case of single inheritance mapping, the change in behavior is slightly
 more involved;   if ``Engineer`` and ``Manager`` above are mapped with
 single table inheritance, in 1.3 the following query would be emitted and
-only a ``Manager`` object is returned::
+only a ``Manager`` object is returned:
+
+.. sourcecode:: text
 
     SELECT anon_1.type AS anon_1_type, anon_1.id AS anon_1_id
     FROM (SELECT employee.type AS type, employee.id AS id
@@ -2814,7 +2902,9 @@ to return additional rows where the columns that correspond to the inheriting
 entity are NULL, which is a valid use case.    The behavior is now equivalent
 to that of joined table inheritance, where it is assumed that the subquery
 returns the correct rows and an error is raised if an unexpected polymorphic
-identity is encountered::
+identity is encountered:
+
+.. sourcecode:: text
 
     SELECT anon_1.type AS anon_1_type, anon_1.id AS anon_1_id
     FROM (SELECT employee.type AS type, employee.id AS id
@@ -2833,10 +2923,14 @@ is to adjust the given subquery to correctly filter the rows based on the
 discriminator column::
 
     print(
-        s.query(Manager).select_entity_from(
-            s.query(Employee).filter(Employee.discriminator == 'manager').
-            subquery()).all()
+        s.query(Manager)
+        .select_entity_from(
+            s.query(Employee).filter(Employee.discriminator == "manager").subquery()
+        )
+        .all()
     )
+
+.. sourcecode:: sql
 
     SELECT anon_1.type AS anon_1_type, anon_1.id AS anon_1_id
     FROM (SELECT employee.type AS type, employee.id AS id
@@ -2919,7 +3013,9 @@ be cached before the VALUES are rendered.
 
 A quick test of the ``execute_values()`` approach using the
 ``bulk_inserts.py`` script in the :ref:`examples_performance` example
-suite reveals an approximate **fivefold performance increase**::
+suite reveals an approximate **fivefold performance increase**:
+
+.. sourcecode:: text
 
     $ python -m examples.performance bulk_inserts --test test_core_insert --num 100000 --dburl postgresql://scott:tiger@localhost/test
 
@@ -3044,7 +3140,9 @@ integer primary key column of a table::
     Table(
         "some_table",
         metadata,
-        Column("id", Integer, Sequence("some_seq", optional=True), primary_key=True),
+        Column(
+            "id", Integer, Sequence("some_seq", start=1, optional=True), primary_key=True
+        ),
     )
 
 The above :class:`.Sequence` is only used for DDL and INSERT statements if the
