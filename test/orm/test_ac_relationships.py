@@ -3,6 +3,7 @@ from sqlalchemy import Column
 from sqlalchemy import exc
 from sqlalchemy import ForeignKey
 from sqlalchemy import func
+from sqlalchemy import insert_sentinel
 from sqlalchemy import Integer
 from sqlalchemy import join
 from sqlalchemy import select
@@ -18,7 +19,7 @@ from sqlalchemy.testing import expect_warnings
 from sqlalchemy.testing import fixtures
 from sqlalchemy.testing.assertions import expect_raises_message
 from sqlalchemy.testing.assertsql import CompiledSQL
-from sqlalchemy.testing.fixtures import ComparableEntity
+from sqlalchemy.testing.entities import ComparableEntity
 from sqlalchemy.testing.fixtures import fixture_session
 
 
@@ -42,6 +43,7 @@ class PartitionByFixture(fixtures.DeclarativeMappedTest):
             __tablename__ = "c"
             id = Column(Integer, primary_key=True)
             b_id = Column(ForeignKey("b.id"))
+            _sentinel = insert_sentinel()
 
         partition = select(
             B,
@@ -181,19 +183,20 @@ class AliasedClassRelationshipTest(
         s = Session(testing.db)
         partitioned_b = self.partitioned_b
 
-        if use_of_type:
-            opt = selectinload(
-                A.partitioned_bs.of_type(partitioned_b)
-            ).joinedload(B.cs)
-        else:
-            opt = selectinload(A.partitioned_bs).joinedload(B.cs)
-
-        q = s.query(A).options(opt)
-
         with expect_raises_message(
             exc.ArgumentError,
-            r'Attribute "B.cs" does not link from element "aliased\(B\)"',
+            r'ORM mapped entity or attribute "B.cs" does not link from '
+            r'relationship "A.partitioned_bs.of_type\(aliased\(B\)\)"',
         ):
+            if use_of_type:
+                opt = selectinload(
+                    A.partitioned_bs.of_type(partitioned_b)
+                ).joinedload(B.cs)
+            else:
+                opt = selectinload(A.partitioned_bs).joinedload(B.cs)
+
+            q = s.query(A).options(opt)
+
             q._compile_context()
 
 
@@ -385,7 +388,6 @@ class StructuralEagerLoadCycleTest(fixtures.DeclarativeMappedTest):
         # so test it both ways even though when things are "working", there's
         # no problem
         if ensure_no_warning:
-
             a = results.first()
         else:
             with expect_warnings(

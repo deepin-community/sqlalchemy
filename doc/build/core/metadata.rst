@@ -104,6 +104,10 @@ table include::
     # via string
     employees.c["employee_id"]
 
+    # a tuple of columns may be returned using multiple strings
+    # (new in 2.0)
+    emp_id, name, type = employees.c["employee_id", "name", "type"]
+
     # iterate through all columns
     for c in employees.c:
         print(c)
@@ -118,9 +122,6 @@ table include::
 
     # access the table's MetaData:
     employees.metadata
-
-    # access the table's bound Engine or Connection, if its MetaData is bound:
-    employees.bind
 
     # access a column's name, type, nullable, primary key, foreign key
     employees.c.employee_id.name
@@ -195,8 +196,8 @@ will issue the CREATE statements:
         Column("pref_value", String(100)),
     )
 
-    {sql}metadata_obj.create_all(engine)
-    PRAGMA table_info(user){}
+    metadata_obj.create_all(engine)
+    {execsql}PRAGMA table_info(user){}
     CREATE TABLE user(
             user_id INTEGER NOT NULL PRIMARY KEY,
             user_name VARCHAR(16) NOT NULL,
@@ -239,11 +240,11 @@ default issue the CREATE or DROP regardless of the table being present:
         Column("employee_name", String(60), nullable=False, key="name"),
         Column("employee_dept", Integer, ForeignKey("departments.department_id")),
     )
-    {sql}employees.create(engine)
-    CREATE TABLE employees(
-    employee_id SERIAL NOT NULL PRIMARY KEY,
-    employee_name VARCHAR(60) NOT NULL,
-    employee_dept INTEGER REFERENCES departments(department_id)
+    employees.create(engine)
+    {execsql}CREATE TABLE employees(
+        employee_id SERIAL NOT NULL PRIMARY KEY,
+        employee_name VARCHAR(60) NOT NULL,
+        employee_dept INTEGER REFERENCES departments(department_id)
     )
     {}
 
@@ -251,8 +252,8 @@ default issue the CREATE or DROP regardless of the table being present:
 
 .. sourcecode:: python+sql
 
-    {sql}employees.drop(engine)
-    DROP TABLE employees
+    employees.drop(engine)
+    {execsql}DROP TABLE employees
     {}
 
 To enable the "check first for the table existing" logic, add the
@@ -300,11 +301,11 @@ Server) or even names that refer to alternate database files (SQLite ATTACH) or
 remote servers (Oracle DBLINK with synonyms).
 
 What all of the above approaches have (mostly) in common is that there's a way
-of referring to this alternate set of tables using a string name.  SQLAlchemy
+of referencing this alternate set of tables using a string name.  SQLAlchemy
 refers to this name as the **schema name**.  Within SQLAlchemy, this is nothing
 more than a string name which is associated with a :class:`_schema.Table`
 object, and is then rendered into SQL statements in a manner appropriate to the
-target database such that the table is referred towards in its remote "schema",
+target database such that the table is referenced in its remote "schema",
 whatever mechanism that is on the target database.
 
 The "schema" name may be associated directly with a :class:`_schema.Table`
@@ -327,8 +328,8 @@ schema names on a per-connection or per-statement basis.
     "database" that typically has a single "owner".  Within this database there
     can be any number of "schemas" which then contain the actual table objects.
 
-    A table within a specific schema is referred towards explicitly using the
-    syntax "<schemaname>.<tablename>".  Constrast this to an architecture such
+    A table within a specific schema is referenced explicitly using the
+    syntax "<schemaname>.<tablename>".  Contrast this to an architecture such
     as that of MySQL, where there are only "databases", however SQL statements
     can refer to multiple databases at once, using the same syntax except it
     is "<database>.<tablename>".  On Oracle, this syntax refers to yet another
@@ -357,10 +358,12 @@ using a Core :class:`_schema.Table` object as follows::
 
 SQL that is rendered using this :class:`_schema.Table`, such as the SELECT
 statement below, will explicitly qualify the table name ``financial_info`` with
-the ``remote_banks`` schema name::
+the ``remote_banks`` schema name:
+
+.. sourcecode:: pycon+sql
 
     >>> print(select(financial_info))
-    SELECT remote_banks.financial_info.id, remote_banks.financial_info.value
+    {printsql}SELECT remote_banks.financial_info.id, remote_banks.financial_info.value
     FROM remote_banks.financial_info
 
 When a :class:`_schema.Table` object is declared with an explicit schema
@@ -579,28 +582,12 @@ Column, Table, MetaData API
 .. attribute:: sqlalchemy.schema.BLANK_SCHEMA
     :noindex:
 
-    Symbol indicating that a :class:`_schema.Table` or :class:`.Sequence`
-    should have 'None' for its schema, even if the parent
-    :class:`_schema.MetaData` has specified a schema.
-
-    .. seealso::
-
-        :paramref:`_schema.MetaData.schema`
-
-        :paramref:`_schema.Table.schema`
-
-        :paramref:`.Sequence.schema`
-
-    .. versionadded:: 1.0.14
+    Refers to :attr:`.SchemaConst.BLANK_SCHEMA`.
 
 .. attribute:: sqlalchemy.schema.RETAIN_SCHEMA
     :noindex:
 
-    Symbol indicating that a :class:`_schema.Table`, :class:`.Sequence`
-    or in some cases a :class:`_schema.ForeignKey` object, in situations
-    where the object is being copied for a :meth:`.Table.to_metadata`
-    operation, should retain the schema name that it already has.
-
+    Refers to :attr:`.SchemaConst.RETAIN_SCHEMA`
 
 
 .. autoclass:: Column
@@ -611,16 +598,14 @@ Column, Table, MetaData API
 .. autoclass:: MetaData
     :members:
 
+.. autoclass:: SchemaConst
+    :members:
 
 .. autoclass:: SchemaItem
     :members:
 
+.. autofunction:: insert_sentinel
+
 .. autoclass:: Table
     :members:
     :inherited-members:
-
-
-.. autoclass:: ThreadLocalMetaData
-    :members:
-
-
