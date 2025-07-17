@@ -61,7 +61,6 @@ class _IdentityDDLFixture(testing.AssertsCompiledSQL):
         (dict(cycle=True), "BY DEFAULT AS IDENTITY (CYCLE)"),
     )
     def test_create_ddl(self, identity_args, text):
-
         if getattr(
             self, "__dialect__", None
         ) != "default_enhanced" and testing.against("oracle"):
@@ -193,7 +192,6 @@ class NotSupportingIdentityDDL(testing.AssertsCompiledSQL, fixtures.TestBase):
 
     @testing.combinations("sqlite", "mysql", "mariadb", "postgresql", "oracle")
     def test_identity_is_ignored(self, dialect):
-
         t = Table(
             "foo_table",
             MetaData(),
