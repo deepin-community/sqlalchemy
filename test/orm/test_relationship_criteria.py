@@ -1,13 +1,18 @@
-import datetime
-import random
+from __future__ import annotations
 
-from sqlalchemy import Boolean
+import datetime
+from functools import partial
+import random
+from typing import List
+
 from sqlalchemy import Column
 from sqlalchemy import DateTime
+from sqlalchemy import delete
 from sqlalchemy import event
 from sqlalchemy import exc as sa_exc
 from sqlalchemy import ForeignKey
 from sqlalchemy import func
+from sqlalchemy import insert
 from sqlalchemy import Integer
 from sqlalchemy import literal_column
 from sqlalchemy import orm
@@ -16,6 +21,8 @@ from sqlalchemy import sql
 from sqlalchemy import String
 from sqlalchemy import Table
 from sqlalchemy import testing
+from sqlalchemy import union
+from sqlalchemy import update
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import column_property
 from sqlalchemy.orm import contains_eager
@@ -23,6 +30,8 @@ from sqlalchemy.orm import defer
 from sqlalchemy.orm import join as orm_join
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import lazyload
+from sqlalchemy.orm import Mapped
+from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import registry
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import selectinload
@@ -169,7 +178,7 @@ class _Fixtures(_fixtures.FixtureTest):
     def mixin_fixture(self):
         users = self.tables.users
 
-        class HasFoob(object):
+        class HasFoob:
             name = Column(String)
 
         class UserWFoob(HasFoob, self.Comparable):
@@ -185,7 +194,7 @@ class _Fixtures(_fixtures.FixtureTest):
     def declattr_mixin_fixture(self):
         users = self.tables.users
 
-        class HasFoob(object):
+        class HasFoob:
             @declared_attr
             def name(cls):
                 return Column(String)
@@ -204,7 +213,7 @@ class _Fixtures(_fixtures.FixtureTest):
         orders, items = self.tables.orders, self.tables.items
         order_items = self.tables.order_items
 
-        class HasFoob(object):
+        class HasFoob:
             description = Column(String)
 
         class HasBat(HasFoob):
@@ -307,6 +316,13 @@ class LoaderCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
             .options(with_loader_criteria(User, User.name != "name")),
         ),
         (
+            # issue #10365
+            lambda User, Address: select(Address)
+            .select_from(User)
+            .join(Address, User.id == Address.user_id)
+            .options(with_loader_criteria(User, User.name != "name")),
+        ),
+        (
             lambda User, Address: select(Address)
             .select_from(orm_join(User, Address, User.addresses))
             .options(with_loader_criteria(User, User.name != "name")),
@@ -355,6 +371,13 @@ class LoaderCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
             .options(with_loader_criteria(User, User.name != "name")),
         ),
         (
+            # issue #10365 - this seems to have already worked
+            lambda User, Address: select(Address.id, User.id)
+            .select_from(User)
+            .join(Address, User.id == Address.user_id)
+            .options(with_loader_criteria(User, User.name != "name")),
+        ),
+        (
             lambda User, Address: select(Address.id, User.id)
             .select_from(orm_join(User, Address, User.addresses))
             .options(with_loader_criteria(User, User.name != "name")),
@@ -399,6 +422,15 @@ class LoaderCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
             lambda User, Address: select(Address)
             .select_from(User)
             .join(User.addresses)
+            .options(
+                with_loader_criteria(Address, Address.email_address != "email")
+            ),
+        ),
+        (
+            # issue #10365
+            lambda User, Address: select(Address)
+            .select_from(User)
+            .join(Address, User.id == Address.user_id)
             .options(
                 with_loader_criteria(Address, Address.email_address != "email")
             ),
@@ -592,6 +624,237 @@ class LoaderCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
             "FROM users WHERE users.name != :name_1",
         )
 
+    @testing.variation("style", ["direct_union", "from_statement"])
+    @testing.variation("add_nested_union", [True, False])
+    def test_select_mapper_columns_w_union_mapper_criteria(
+        self, multi_mixin_fixture, style: testing.Variation, add_nested_union
+    ):
+        """test #9635"""
+        HasFoob, Order, Item = multi_mixin_fixture
+
+        stmt = (
+            select(Order.id, Order.description)
+            .where(Order.id > 8)
+            .union(select(Order.id, Order.description).where(Order.id <= 8))
+        )
+
+        if add_nested_union:
+            stmt = union(
+                stmt,
+                union(
+                    select(Item.id, Item.description).where(Item.id <= 8),
+                    select(Item.id, Item.description).where(Item.id > 8),
+                ),
+            )
+
+        if style.direct_union:
+            stmt = stmt.options(
+                with_loader_criteria(
+                    HasFoob,
+                    lambda cls: cls.description != "name",
+                    include_aliases=True,
+                )
+            )
+        elif style.from_statement:
+            stmt = (
+                select(Order.id, Order.description)
+                .from_statement(stmt)
+                .options(
+                    with_loader_criteria(
+                        HasFoob,
+                        lambda cls: cls.description != "name",
+                        include_aliases=True,
+                    )
+                )
+            )
+
+        else:
+            style.fail()
+
+        if add_nested_union:
+            # the criteria is embedded into all UNIONS regardless of nesting.
+            self.assert_compile(
+                stmt,
+                "(SELECT orders.id, orders.description FROM orders WHERE "
+                "orders.id > :id_1 AND orders.description != :description_1 "
+                "UNION SELECT orders.id, orders.description FROM orders WHERE "
+                "orders.id <= :id_2 AND orders.description != :description_2) "
+                "UNION (SELECT items.id, items.description FROM items WHERE "
+                "items.id <= :id_3 AND items.description != :description_3 "
+                "UNION SELECT items.id, items.description FROM items WHERE "
+                "items.id > :id_4 AND items.description != :description_4)",
+                checkparams={
+                    "id_1": 8,
+                    "description_1": "name",
+                    "id_2": 8,
+                    "description_2": "name",
+                    "id_3": 8,
+                    "description_3": "name",
+                    "id_4": 8,
+                    "description_4": "name",
+                },
+            )
+        else:
+            self.assert_compile(
+                stmt,
+                "SELECT orders.id, orders.description FROM orders WHERE "
+                "orders.id > :id_1 AND orders.description != :description_1 "
+                "UNION SELECT orders.id, orders.description FROM orders WHERE "
+                "orders.id <= :id_2 AND orders.description != :description_2",
+                checkparams={
+                    "description_1": "name",
+                    "description_2": "name",
+                    "id_1": 8,
+                    "id_2": 8,
+                },
+            )
+
+    def test_select_mapper_columns_w_core_dml_mapper_criteria(
+        self, multi_mixin_fixture
+    ):
+        """test #9635"""
+        HasFoob, Order, Item = multi_mixin_fixture
+
+        stmt = (
+            insert(Order)
+            .from_select(
+                ["id", "description"],
+                select(Order.id, Order.description).where(Order.id > 8),
+            )
+            .options(
+                with_loader_criteria(
+                    HasFoob,
+                    lambda cls: cls.description != "name",
+                    include_aliases=True,
+                )
+            )
+        )
+
+        self.assert_compile(
+            stmt,
+            "INSERT INTO orders (id, description) SELECT orders.id, "
+            "orders.description FROM orders WHERE orders.id > :id_1 "
+            "AND orders.description != :description_1",
+            checkparams={"description_1": "name", "id_1": 8},
+        )
+
+    @testing.variation("update_is_orm", [True, False])
+    def test_select_mapper_columns_w_core_cte_update_mapper_criteria(
+        self, multi_mixin_fixture, update_is_orm
+    ):
+        """test #9635"""
+        HasFoob, Order, Item = multi_mixin_fixture
+
+        cte = select(Order).cte("pd")
+
+        if update_is_orm:
+            stmt = (
+                update(Order)
+                .where(Order.id == cte.c.id)
+                .values(description="newname")
+            )
+        else:
+            stmt = (
+                update(Order.__table__)
+                .where(Order.__table__.c.id == cte.c.id)
+                .values(description="newname")
+            )
+
+        stmt = stmt.options(
+            with_loader_criteria(
+                HasFoob,
+                lambda cls: cls.description != "name",
+                include_aliases=True,
+            )
+        )
+
+        if update_is_orm:
+            self.assert_compile(
+                stmt,
+                "WITH pd AS (SELECT orders.id AS id, "
+                "orders.user_id AS user_id, "
+                "orders.address_id AS address_id, "
+                "orders.description AS description, orders.isopen AS isopen "
+                "FROM orders WHERE orders.description != %(description_1)s) "
+                "UPDATE orders SET description=%(description)s "
+                "FROM pd WHERE orders.id = pd.id "
+                "AND orders.description != %(description_2)s",
+                dialect="postgresql",
+                checkparams={
+                    "description": "newname",
+                    "description_1": "name",
+                    "description_2": "name",
+                },
+            )
+        else:
+            # non ORM update, no criteria, but criteria still gets rendered
+            # inside the SELECT
+            self.assert_compile(
+                stmt,
+                "WITH pd AS (SELECT orders.id AS id, "
+                "orders.user_id AS user_id, "
+                "orders.address_id AS address_id, "
+                "orders.description AS description, orders.isopen AS isopen "
+                "FROM orders WHERE orders.description != %(description_1)s) "
+                "UPDATE orders SET description=%(description)s "
+                "FROM pd WHERE orders.id = pd.id",
+                dialect="postgresql",
+                checkparams={
+                    "description": "newname",
+                    "description_1": "name",
+                },
+            )
+
+    @testing.variation("delete_is_orm", [True, False])
+    def test_select_mapper_columns_w_core_cte_delete_mapper_criteria(
+        self, multi_mixin_fixture, delete_is_orm
+    ):
+        """test #9635"""
+        HasFoob, Order, Item = multi_mixin_fixture
+
+        cte = select(Order).cte("pd")
+
+        if delete_is_orm:
+            stmt = delete(Order).where(Order.id == cte.c.id)
+        else:
+            stmt = delete(Order.__table__).where(
+                Order.__table__.c.id == cte.c.id
+            )
+
+        stmt = stmt.options(
+            with_loader_criteria(
+                HasFoob,
+                lambda cls: cls.description != "name",
+                include_aliases=True,
+            )
+        )
+
+        if delete_is_orm:
+            self.assert_compile(
+                stmt,
+                "WITH pd AS (SELECT orders.id AS id, orders.user_id AS "
+                "user_id, orders.address_id AS address_id, "
+                "orders.description AS description, orders.isopen AS isopen "
+                "FROM orders WHERE orders.description != %(description_1)s) "
+                "DELETE FROM orders USING pd WHERE orders.id = pd.id "
+                "AND orders.description != %(description_2)s",
+                dialect="postgresql",
+                checkparams={"description_1": "name", "description_2": "name"},
+            )
+        else:
+            # non ORM update, no criteria, but criteria still gets rendered
+            # inside the SELECT
+            self.assert_compile(
+                stmt,
+                "WITH pd AS (SELECT orders.id AS id, orders.user_id AS "
+                "user_id, orders.address_id AS address_id, "
+                "orders.description AS description, orders.isopen AS isopen "
+                "FROM orders WHERE orders.description != %(description_1)s) "
+                "DELETE FROM orders USING pd WHERE orders.id = pd.id",
+                dialect="postgresql",
+                checkparams={"description_1": "name"},
+            )
+
     def test_select_join_mapper_mapper_criteria(self, user_address_fixture):
         User, Address = user_address_fixture
 
@@ -684,7 +947,6 @@ class LoaderCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
         s = Session(testing.db, future=True)
 
         with self.sql_execution_asserter() as asserter:
-
             s.execute(stmt).all()
 
         asserter.assert_(
@@ -709,7 +971,6 @@ class LoaderCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
         User, Address = user_address_fixture
 
         def get_statement(closure="name"):
-
             stmt = select(User).options(
                 selectinload(User.addresses),
                 with_loader_criteria(
@@ -828,7 +1089,6 @@ class LoaderCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
         User, Address = user_address_fixture
 
         def get_statement(closure="name"):
-
             stmt = (
                 select(User)
                 .options(
@@ -1124,7 +1384,6 @@ class LoaderCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
         )
 
         with self.sql_execution_asserter() as asserter:
-
             s.execute(stmt)
 
         asserter.assert_(
@@ -1399,11 +1658,13 @@ class LoaderCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
 class TemporalFixtureTest(testing.fixtures.DeclarativeMappedTest):
     @classmethod
     def setup_classes(cls):
-        class HasTemporal(object):
+        class HasTemporal:
             """Mixin that identifies a class as having a timestamp column"""
 
             timestamp = Column(
-                DateTime, default=datetime.datetime.utcnow, nullable=False
+                DateTime,
+                default=partial(datetime.datetime.now, datetime.timezone.utc),
+                nullable=False,
             )
 
         cls.HasTemporal = HasTemporal
@@ -1529,7 +1790,7 @@ class TemporalFixtureTest(testing.fixtures.DeclarativeMappedTest):
                     datetime.datetime(2009, 10, 16, 12, 00, 00),
                     datetime.datetime(2009, 10, 18, 12, 00, 00),
                 ),
-                *loader_options
+                *loader_options,
             )
         )
         if is_joined:
@@ -1549,7 +1810,7 @@ class TemporalFixtureTest(testing.fixtures.DeclarativeMappedTest):
                     datetime.datetime(2009, 10, 15, 11, 00, 00),
                     datetime.datetime(2009, 10, 18, 12, 00, 00),
                 ),
-                *loader_options
+                *loader_options,
             )
         )
         if is_joined:
@@ -1646,14 +1907,15 @@ class RelationshipCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
         for value in "ed@wood.com", "ed@lala.com":
             s.close()
             with self.sql_execution_asserter() as asserter:
-
                 result = go(value)
 
                 eq_(
                     result.scalars().unique().all(),
-                    self._user_minus_edwood(*user_address_fixture)
-                    if value == "ed@wood.com"
-                    else self._user_minus_edlala(*user_address_fixture),
+                    (
+                        self._user_minus_edwood(*user_address_fixture)
+                        if value == "ed@wood.com"
+                        else self._user_minus_edlala(*user_address_fixture)
+                    ),
                 )
 
             asserter.assert_(
@@ -1719,9 +1981,11 @@ class RelationshipCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
 
                 eq_(
                     result.scalars().unique().all(),
-                    self._user_minus_edwood(*user_address_fixture)
-                    if value == "ed@wood.com"
-                    else self._user_minus_edlala(*user_address_fixture),
+                    (
+                        self._user_minus_edwood(*user_address_fixture)
+                        if value == "ed@wood.com"
+                        else self._user_minus_edlala(*user_address_fixture)
+                    ),
                 )
 
             asserter.assert_(
@@ -1776,9 +2040,11 @@ class RelationshipCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
 
                 eq_(
                     result.scalars().unique().all(),
-                    self._user_minus_edwood(*user_address_fixture)
-                    if value == "ed@wood.com"
-                    else self._user_minus_edlala(*user_address_fixture),
+                    (
+                        self._user_minus_edwood(*user_address_fixture)
+                        if value == "ed@wood.com"
+                        else self._user_minus_edlala(*user_address_fixture)
+                    ),
                 )
 
             asserter.assert_(
@@ -1802,6 +2068,55 @@ class RelationshipCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
                             "email_address_1": value,
                         }
                     ],
+                ),
+            )
+
+    @testing.combinations(
+        (selectinload,),
+        (subqueryload,),
+        (lazyload,),
+        (joinedload,),
+        argnames="opt",
+    )
+    @testing.variation("use_in", [True, False])
+    def test_opts_local_criteria_cachekey(
+        self, opt, user_address_fixture, use_in
+    ):
+        """test #11173"""
+        User, Address = user_address_fixture
+
+        s = Session(testing.db, future=True)
+
+        def go(value):
+            if use_in:
+                expr = ~Address.email_address.in_([value, "some_email"])
+            else:
+                expr = Address.email_address != value
+            stmt = (
+                select(User)
+                .options(
+                    opt(User.addresses.and_(expr)),
+                )
+                .order_by(User.id)
+            )
+            result = s.execute(stmt)
+            return result
+
+        for value in (
+            "ed@wood.com",
+            "ed@lala.com",
+            "ed@wood.com",
+            "ed@lala.com",
+        ):
+            s.close()
+            result = go(value)
+
+            eq_(
+                result.scalars().unique().all(),
+                (
+                    self._user_minus_edwood(*user_address_fixture)
+                    if value == "ed@wood.com"
+                    else self._user_minus_edlala(*user_address_fixture)
                 ),
             )
 
@@ -1872,9 +2187,11 @@ class RelationshipCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
 
                 eq_(
                     result,
-                    self._user_minus_edwood(*user_address_fixture)
-                    if value == "ed@wood.com"
-                    else self._user_minus_edlala(*user_address_fixture),
+                    (
+                        self._user_minus_edwood(*user_address_fixture)
+                        if value == "ed@wood.com"
+                        else self._user_minus_edlala(*user_address_fixture)
+                    ),
                 )
 
     @testing.combinations((True,), (False,), argnames="use_compiled_cache")
@@ -1976,14 +2293,15 @@ class RelationshipCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
 
         for value in "ed@wood.com", "ed@lala.com":
             with self.sql_execution_asserter() as asserter:
-
                 result = go(value)
 
                 eq_(
                     result.scalars().unique().all(),
-                    self._user_minus_edwood(*user_address_fixture)
-                    if value == "ed@wood.com"
-                    else self._user_minus_edlala(*user_address_fixture),
+                    (
+                        self._user_minus_edwood(*user_address_fixture)
+                        if value == "ed@wood.com"
+                        else self._user_minus_edlala(*user_address_fixture)
+                    ),
                 )
 
             asserter.assert_(
@@ -2049,14 +2367,15 @@ class RelationshipCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
 
         for value in "ed@wood.com", "ed@lala.com":
             with self.sql_execution_asserter() as asserter:
-
                 result = go(value)
 
                 eq_(
                     result.scalars().unique().all(),
-                    self._user_minus_edwood(*user_address_fixture)
-                    if value == "ed@wood.com"
-                    else self._user_minus_edlala(*user_address_fixture),
+                    (
+                        self._user_minus_edwood(*user_address_fixture)
+                        if value == "ed@wood.com"
+                        else self._user_minus_edlala(*user_address_fixture)
+                    ),
                 )
 
             asserter.assert_(
@@ -2142,6 +2461,28 @@ class RelationshipCriteriaTest(_Fixtures, testing.AssertsCompiledSQL):
             "AND items_1.description != :description_1",
         )
 
+    def test_use_secondary_table_in_criteria(self, order_item_fixture):
+        """test #11010 , regression caused by #9779"""
+
+        Order, Item = order_item_fixture
+        order_items = self.tables.order_items
+
+        stmt = select(Order).join(
+            Order.items.and_(
+                order_items.c.item_id > 1, Item.description != "description"
+            )
+        )
+
+        self.assert_compile(
+            stmt,
+            "SELECT orders.id, orders.user_id, orders.address_id, "
+            "orders.description, orders.isopen FROM orders JOIN order_items "
+            "AS order_items_1 ON orders.id = order_items_1.order_id "
+            "JOIN items ON items.id = order_items_1.item_id "
+            "AND order_items_1.item_id > :item_id_1 "
+            "AND items.description != :description_1",
+        )
+
 
 class SubqueryCriteriaTest(fixtures.DeclarativeMappedTest):
     """test #10223"""
@@ -2152,15 +2493,17 @@ class SubqueryCriteriaTest(fixtures.DeclarativeMappedTest):
 
         class Temperature(Base):
             __tablename__ = "temperature"
-            id = Column(Integer, primary_key=True)
-            pointless_flag = Column(Boolean)
+            id: Mapped[int] = mapped_column(primary_key=True)
+            pointless_flag: Mapped[bool]
 
         class Color(Base):
             __tablename__ = "color"
-            id = Column(Integer, primary_key=True)
-            name = Column(String(10))
-            temperature_id = Column(ForeignKey("temperature.id"))
-            temperature = relationship("Temperature")
+            id: Mapped[int] = mapped_column(primary_key=True)
+            name: Mapped[str] = mapped_column(String(50))
+            temperature_id: Mapped[int] = mapped_column(
+                ForeignKey("temperature.id")
+            )
+            temperature: Mapped[Temperature] = relationship()
 
         room_connections = Table(
             "room_connections",
@@ -2183,12 +2526,11 @@ class SubqueryCriteriaTest(fixtures.DeclarativeMappedTest):
 
         class Room(Base):
             __tablename__ = "room"
-            id = Column(Integer, primary_key=True)
-            token = Column(String(10))
-            color_id = Column(ForeignKey("color.id"))
-            color = relationship("Color")
-            connected_rooms = relationship(
-                "Room",
+            id: Mapped[int] = mapped_column(primary_key=True)
+            token: Mapped[str] = mapped_column(String(50))
+            color_id: Mapped[int] = mapped_column(ForeignKey("color.id"))
+            color: Mapped[Color] = relationship()
+            connected_rooms: Mapped[List["Room"]] = relationship(  # noqa: F821
                 secondary=room_connections,
                 primaryjoin=id == room_connections.c.room_a_id,
                 secondaryjoin=id == room_connections.c.room_b_id,
